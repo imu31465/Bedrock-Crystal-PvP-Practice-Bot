@@ -471,12 +471,11 @@ export function saveConfigs() {
 export function loadGlobalSettings() {
   try {
     const raw = safeGetDynamicProperty(GLOBAL_SETTINGS_PROPERTY_ID);
-    if (raw) {
-      setGlobalSettings(JSON.parse(raw));
-    } else {
-      setGlobalSettings(normalizeGlobalSettings({}));
-    }
-  } catch {}
+    const parsed = raw ? JSON.parse(raw) : {};
+    setGlobalSettings(normalizeGlobalSettings(parsed));
+  } catch {
+    setGlobalSettings(normalizeGlobalSettings({}));
+  }
 }
 export function saveGlobalSettings() {
   try {

@@ -14,6 +14,7 @@ import {
   pendingSpawnRequests, debugLogBuffer, debugLogDirty,
   setDebugLogBuffer, setDebugLogDirty,
 } from "./state.js";
+import { normalizeGlobalSettings } from "./config.js";
 
 // ── Vector Math ──
 export function distance(a, b) {
@@ -88,9 +89,11 @@ export function canOccupyLocation(dimension, location) {
   return isAirBlock(feetBlock) && isAirBlock(headBlock);
 }
 export function findNearestStandingLocation(dimension, location, yOffsets) {
+  const gs = normalizeGlobalSettings(globalSettings || {});
   const offsets = yOffsets ?? [0, -1, 1, -2, 2];
   for (const yOffset of offsets) {
     const candidate = addVector(location, { x: 0, y: yOffset, z: 0 });
+    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
     if (isSafeStandingLocation(dimension, candidate)) return candidate;
   }
   return undefined;
@@ -198,12 +201,12 @@ export function shortId(id) {
 
 // ── Boundary ──
 export function isLocationInsideBotBoundary(location) {
-  const s = globalSettings || {};
+  const s = normalizeGlobalSettings(globalSettings || {});
   if (!s.boundaryEnabled) return true;
-  const minX = Number(s.boundaryMinX ?? -100) - 0.5;
-  const maxX = Number(s.boundaryMaxX ?? 100) + 0.5;
-  const minZ = Number(s.boundaryMinZ ?? -100) - 0.5;
-  const maxZ = Number(s.boundaryMaxZ ?? 100) + 0.5;
+  const minX = s.boundaryMinX - 0.5;
+  const maxX = s.boundaryMaxX + 0.5;
+  const minZ = s.boundaryMinZ - 0.5;
+  const maxZ = s.boundaryMaxZ + 0.5;
   return location.x >= minX && location.x <= maxX &&
          location.z >= minZ && location.z <= maxZ;
 }

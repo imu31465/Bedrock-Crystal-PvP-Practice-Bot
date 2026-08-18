@@ -10,6 +10,7 @@ import {
   blockCache, globalTick, incrementGlobalTick,
   introShown, pendingSpawnRequests, botConfigs, runtimeState,
   trackedBots, trackedBotMetaById, trackedBotIdByUid, clearCaches,
+  globalSettings,
 } from "./state.js";
 import {
   getAllBots, getAllPlayers, getPlayerByName, getPlayersInDimension, findNearestTarget,
@@ -22,10 +23,12 @@ import {
   broadcastDeathMessage, distance, shortId,
   formatLocation, summarizeNearbyPlayers, summarizeNearbyBots,
   describeBlockContext, scheduleBotProbe,
+  isLocationInsideBotBoundary,
 } from "./utils.js";
 import {
   loadConfigs, loadGlobalSettings, getRuntime, materializeConfig,
   persistBotConfig, patchApplyDifficultyPreset, getDefaultBotDisplayName,
+  normalizeGlobalSettings,
 } from "./config.js";
 import {
   ensureBotInitialized, ensureBotEquipmentIntegrity,
@@ -84,6 +87,13 @@ function tickBots() {
       continue;
     }
 
+    // ── Boundary enforcement (highest priority) ──
+    const gs = normalizeGlobalSettings(globalSettings || {});
+    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(bot.location)) {
+      enforceBotBoundary(bot, config);
+      continue; // Skip everything else, force return first
+    }
+
     // Staggered Target Finding
     if (runtime.staggerOffset === undefined) runtime.staggerOffset = Math.floor(Math.random() * 3);
     if (globalTick % 3 === runtime.staggerOffset) {
@@ -97,11 +107,16 @@ function tickBots() {
       continue;
     }
 
+    // Skip if target is outside boundary
+    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(target.location)) {
+      runtime.cachedTarget = null;
+      ensureBotEquipmentIntegrity(bot, config);
+      patchSyncVisualEquipmentSlots(bot);
+      continue;
+    }
+
     // Track health
     runtime.lastKnownHealth = patchGetCurrentHealthValue(bot);
-
-    // Handle boundary
-    if (enforceBotBoundary(bot, config)) continue;
 
     // Handle totem safety
     handleTotemSafety(bot, config);
