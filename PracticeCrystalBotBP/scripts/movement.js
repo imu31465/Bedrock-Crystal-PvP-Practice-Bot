@@ -382,6 +382,7 @@ export function patchFindMovementStep(dimension, origin, moveDirection, aggressi
     const base = addVector(origin, { x: moveDirection.x * step, y: 0, z: moveDirection.z * step });
     for (const yOffset of yOffsets) {
       const candidate = addVector(base, { x: 0, y: yOffset, z: 0 });
+      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
       if (isSafeStandingLocation(dimension, candidate)) return candidate;
     }
   }
@@ -391,6 +392,7 @@ export function patchFindMovementStep(dimension, origin, moveDirection, aggressi
     const jumpDistances = [2.0, 2.5, 3.0];
     for (const step of jumpDistances) {
       const candidate = addVector(origin, { x: moveDirection.x * step, y: 0, z: moveDirection.z * step });
+      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
       if (isSafeStandingLocation(dimension, candidate)) {
         // Ensure there is clearance to jump
         if (isAirBlock(getBlock(dimension, addVector(origin, {x: 0, y: 1, z: 0}))) &&
@@ -413,6 +415,7 @@ function patchFindDescendStep(dimension, origin, targetLocation, moveDirection) 
     for (const yOffset of yOffsets) {
       const candidate = addVector(base, { x: 0, y: yOffset, z: 0 });
       if (candidate.y >= origin.y - 0.2 || !isSafeStandingLocation(dimension, candidate)) continue;
+      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
       const score = Math.abs(candidate.y - targetLocation.y) + Math.hypot(candidate.x - targetLocation.x, candidate.z - targetLocation.z) * 0.25;
       if (score < bestScore) { best = candidate; bestScore = score; }
     }
@@ -428,6 +431,7 @@ function patchTryBuildStep(bot, config, moveDirection) {
   if (front.x === origin.x && front.z === origin.z) return undefined;
   const climbTargets = [addVector(front, { x: 0, y: 1, z: 0 }), addVector(front, { x: 0, y: 2, z: 0 })];
   for (const target of climbTargets) {
+    if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(target)) continue;
     if (isSafeStandingLocation(bot.dimension, target)) { runtime.lastBuildStepTick = globalTick; return target; }
   }
   return undefined;
@@ -795,5 +799,10 @@ export function handleMovement(bot, target, config) {
       runtime.stuckTicks = 0;
       debugLog(bot, config, "movement", `§e[脱出] スタック状態から強制脱出`, true);
     }
+  }
+  // Safety net: if bot ended up outside boundary after all movement, pull back
+  if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(bot.location)) {
+    const safe = findSafeBoundaryReturnLocation(bot);
+    try { bot.teleport(safe, { dimension: bot.dimension }); } catch {}
   }
 }

@@ -4,27 +4,47 @@
     "name": "Practice CrystalPvP Bot BP",
     "description": "Summonable CrystalPvP bot with command UI, custom entity AI, auto totem, pearls, sword combo, and crystal combo.",
     "uuid": "addfadf6-89c3-407d-a406-e01a118f54d0",
-    "version": [1, 2, 0],
-    "min_engine_version": [1, 20, 0]
+    "version": [
+      1,
+      4,
+      0
+    ],
+    "min_engine_version": [
+      1,
+      20,
+      0
+    ]
   },
   "modules": [
     {
       "type": "data",
       "uuid": "d5db436e-48bd-400b-babd-a6bd0b60784d",
-      "version": [1, 3, 0]
+      "version": [
+        1,
+        3,
+        0
+      ]
     },
     {
       "type": "script",
       "language": "javascript",
       "entry": "scripts/main.js",
       "uuid": "eadf7b22-5f15-4b06-acc7-cce30d206ef3",
-      "version": [1, 3, 0]
+      "version": [
+        1,
+        4,
+        0
+      ]
     }
   ],
   "dependencies": [
     {
       "uuid": "e51a943e-c219-44f8-9a8d-8d08ab70834f",
-      "version": [1, 3, 0]
+      "version": [
+        1,
+        3,
+        0
+      ]
     },
     {
       "module_name": "@minecraft/server",

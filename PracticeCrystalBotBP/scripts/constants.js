@@ -36,7 +36,7 @@ export const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 export const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 export const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 export const BOT_READY_TAG = "pvpbot.ready";
-export const ADDON_VERSION = "1.3.00";
+export const ADDON_VERSION = "1.4.00";
 
 export const OBSIDIAN_ID = "minecraft:obsidian";
 export const END_CRYSTAL_ID = "minecraft:end_crystal";

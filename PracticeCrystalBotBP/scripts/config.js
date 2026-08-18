@@ -261,11 +261,11 @@ function tagToConfig(tagStr, uid, bot) {
 
 export function normalizeGlobalSettings(settings) {
   return {
-    boundaryEnabled: settings?.boundaryEnabled ?? false,
-    boundaryMinX: Number(settings?.boundaryMinX ?? -100),
-    boundaryMaxX: Number(settings?.boundaryMaxX ?? 100),
-    boundaryMinZ: Number(settings?.boundaryMinZ ?? -100),
-    boundaryMaxZ: Number(settings?.boundaryMaxZ ?? 100),
+    boundaryEnabled: settings?.boundaryEnabled ?? true,
+    boundaryMinX: Number(settings?.boundaryMinX ?? -49),
+    boundaryMaxX: Number(settings?.boundaryMaxX ?? 49),
+    boundaryMinZ: Number(settings?.boundaryMinZ ?? 115),
+    boundaryMaxZ: Number(settings?.boundaryMaxZ ?? 199),
   };
 }
 
@@ -471,7 +471,11 @@ export function saveConfigs() {
 export function loadGlobalSettings() {
   try {
     const raw = safeGetDynamicProperty(GLOBAL_SETTINGS_PROPERTY_ID);
-    if (raw) setGlobalSettings(JSON.parse(raw));
+    if (raw) {
+      setGlobalSettings(JSON.parse(raw));
+    } else {
+      setGlobalSettings(normalizeGlobalSettings({}));
+    }
   } catch {}
 }
 export function saveGlobalSettings() {

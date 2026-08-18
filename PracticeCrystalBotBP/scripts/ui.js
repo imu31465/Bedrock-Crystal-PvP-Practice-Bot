@@ -377,10 +377,34 @@ export async function openSettingsForm(player, defaultIndex = 0) {
   await openBotManageMenu(player, nearbyBots[pickedIndex], pickedIndex);
 }
 
+async function openBoundarySettingsForm(player) {
+  const gs = normalizeGlobalSettings(globalSettings);
+  const form = new ModalFormData()
+    .title("安全範囲設定")
+    .toggle("範囲制限を有効にする", { defaultValue: gs.boundaryEnabled })
+    .slider("Min X", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMinX })
+    .slider("Max X", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMaxX })
+    .slider("Min Z", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMinZ })
+    .slider("Max Z", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMaxZ });
+  const response = await form.show(player);
+  if (response.canceled || !response.formValues) return;
+  const [boundaryEnabled, boundaryMinX, boundaryMaxX, boundaryMinZ, boundaryMaxZ] = response.formValues;
+  setGlobalSettings({
+    ...globalSettings,
+    boundaryEnabled,
+    boundaryMinX: Number(boundaryMinX),
+    boundaryMaxX: Number(boundaryMaxX),
+    boundaryMinZ: Number(boundaryMinZ),
+    boundaryMaxZ: Number(boundaryMaxZ),
+  });
+  saveGlobalSettings();
+  player.sendMessage(`§a安全範囲を更新しました (${boundaryEnabled ? "ON" : "OFF"}: X[${boundaryMinX}~${boundaryMaxX}] Z[${boundaryMinZ}~${boundaryMaxZ}])`);
+}
+
 export async function openRootMenu(player) {
   const response = await new ActionFormData().title("Crystal PvP Bot")
     .body(`v${await import("./constants.js").then(c => c.ADDON_VERSION)}`)
-    .button("Bot を召喚").button("Bot 設定").button("難易度プリセット").button("ヘルプ").show(player);
+    .button("Bot を召喚").button("Bot 設定").button("難易度プリセット").button("安全範囲設定").button("ヘルプ").show(player);
   if (response.canceled) return;
   if (response.selection === 0) spawnBotForPlayer(player);
   else if (response.selection === 1) await openSettingsForm(player);
@@ -389,7 +413,8 @@ export async function openRootMenu(player) {
     if (bots.length) await openDifficultyPresetMenu(player, bots[0]);
     else player.sendMessage("§c近くに Bot がいません。");
   }
-  else if (response.selection === 3) {
+  else if (response.selection === 3) await openBoundarySettingsForm(player);
+  else if (response.selection === 4) {
     await new ActionFormData().title("Crystal PvP Bot")
       .body("1. /bot で Bot メニューを開きます。\n2. /pvpbot:spawn で Bot を出せます。\n3. チェストを見ながら供給チェストを設定できます。\n4. 安全範囲はデフォルトONです。")
       .button("閉じる").show(player);
