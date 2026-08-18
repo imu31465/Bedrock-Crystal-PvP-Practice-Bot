@@ -384,21 +384,25 @@ async function openBoundarySettingsForm(player) {
     .toggle("範囲制限を有効にする", { defaultValue: gs.boundaryEnabled })
     .slider("Min X", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMinX })
     .slider("Max X", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMaxX })
+    .slider("Min Y", -64, 320, { valueStep: 1, defaultValue: gs.boundaryMinY })
+    .slider("Max Y", -64, 320, { valueStep: 1, defaultValue: gs.boundaryMaxY })
     .slider("Min Z", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMinZ })
     .slider("Max Z", -500, 500, { valueStep: 1, defaultValue: gs.boundaryMaxZ });
   const response = await form.show(player);
   if (response.canceled || !response.formValues) return;
-  const [boundaryEnabled, boundaryMinX, boundaryMaxX, boundaryMinZ, boundaryMaxZ] = response.formValues;
+  const [boundaryEnabled, boundaryMinX, boundaryMaxX, boundaryMinY, boundaryMaxY, boundaryMinZ, boundaryMaxZ] = response.formValues;
   setGlobalSettings({
     ...globalSettings,
     boundaryEnabled,
     boundaryMinX: Number(boundaryMinX),
     boundaryMaxX: Number(boundaryMaxX),
+    boundaryMinY: Number(boundaryMinY),
+    boundaryMaxY: Number(boundaryMaxY),
     boundaryMinZ: Number(boundaryMinZ),
     boundaryMaxZ: Number(boundaryMaxZ),
   });
   saveGlobalSettings();
-  player.sendMessage(`§a安全範囲を更新しました (${boundaryEnabled ? "ON" : "OFF"}: X[${boundaryMinX}~${boundaryMaxX}] Z[${boundaryMinZ}~${boundaryMaxZ}])`);
+  player.sendMessage(`§a安全範囲を更新しました (${boundaryEnabled ? "ON" : "OFF"}: X[${boundaryMinX}~${boundaryMaxX}] Y[${boundaryMinY}~${boundaryMaxY}] Z[${boundaryMinZ}~${boundaryMaxZ}])`);
 }
 
 export async function openRootMenu(player) {

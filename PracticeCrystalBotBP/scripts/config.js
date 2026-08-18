@@ -264,6 +264,8 @@ export function normalizeGlobalSettings(settings) {
     boundaryEnabled: settings?.boundaryEnabled ?? true,
     boundaryMinX: Number(settings?.boundaryMinX ?? -49),
     boundaryMaxX: Number(settings?.boundaryMaxX ?? 49),
+    boundaryMinY: Number(settings?.boundaryMinY ?? -60),
+    boundaryMaxY: Number(settings?.boundaryMaxY ?? 38),
     boundaryMinZ: Number(settings?.boundaryMinZ ?? 115),
     boundaryMaxZ: Number(settings?.boundaryMaxZ ?? 199),
   };

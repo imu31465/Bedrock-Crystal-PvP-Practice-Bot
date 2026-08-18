@@ -67,6 +67,13 @@ function tickBots() {
     // Skip if tickInterval says so
     if (config.tickInterval > 1 && globalTick % config.tickInterval !== 0) continue;
 
+    // ── Boundary enforcement (HIGHEST PRIORITY — before everything else) ──
+    const gs = normalizeGlobalSettings(globalSettings || {});
+    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(bot.location)) {
+      enforceBotBoundary(bot, config);
+      continue; // Force return first, skip all other logic
+    }
+
     // Skip if configuring (and make invincible)
     if (runtime.isConfiguring) {
       try { bot.addEffect("resistance", 10, { amplifier: 255, showParticles: false }); } catch {}
@@ -85,13 +92,6 @@ function tickBots() {
       ensureBotEquipmentIntegrity(bot, config);
       patchSyncVisualEquipmentSlots(bot);
       continue;
-    }
-
-    // ── Boundary enforcement (highest priority) ──
-    const gs = normalizeGlobalSettings(globalSettings || {});
-    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(bot.location)) {
-      enforceBotBoundary(bot, config);
-      continue; // Skip everything else, force return first
     }
 
     // Staggered Target Finding

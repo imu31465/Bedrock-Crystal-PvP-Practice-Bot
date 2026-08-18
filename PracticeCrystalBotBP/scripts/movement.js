@@ -595,7 +595,7 @@ function clampLocationToBotBoundary(location) {
   const settings = normalizeGlobalSettings(globalSettings);
   return {
     x: Math.max(settings.boundaryMinX + 1.5, Math.min(settings.boundaryMaxX - 0.5, location.x)),
-    y: location.y,
+    y: Math.max(settings.boundaryMinY, Math.min(settings.boundaryMaxY, location.y)),
     z: Math.max(settings.boundaryMinZ + 1.5, Math.min(settings.boundaryMaxZ - 0.5, location.z)),
   };
 }
