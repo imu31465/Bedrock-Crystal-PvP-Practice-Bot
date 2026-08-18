@@ -1,0 +1,87 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:entity": {
+    "description": {
+      "identifier": "pvpbot:crystal_bot",
+      "is_spawnable": true,
+      "is_summonable": true,
+      "is_experimental": false,
+      "properties": {
+        "pvpbot:head_pitch": {
+          "type": "float",
+          "range": [0.0, 180.0],
+          "default": 90.0,
+          "client_sync": true
+        },
+        "pvpbot:head_yaw": {
+          "type": "float",
+          "range": [-90.0, 90.0],
+          "default": 0.0,
+          "client_sync": true
+        },
+        "pvpbot:has_head_gear": {
+          "type": "bool",
+          "default": false,
+          "client_sync": true
+        }
+      }
+    },
+    "components": {
+      "minecraft:type_family": {
+        "family": ["pvpbot", "mob"]
+      },
+      "minecraft:nameable": {},
+      "minecraft:health": {
+        "value": 20,
+        "max": 20
+      },
+      "minecraft:movement": {
+        "value": 0.3
+      },
+      "minecraft:movement.basic": {},
+      "minecraft:collision_box": {
+        "width": 0.6,
+        "height": 1.8
+      },
+      "minecraft:physics": {},
+      "minecraft:pushable": {
+        "is_pushable": true,
+        "is_pushable_by_piston": true
+      },
+      "minecraft:knockback_resistance": {
+        "value": 0
+      },
+      "minecraft:persistent": {},
+      "minecraft:spawn_egg": {
+        "base_color": "#141414",
+        "overlay_color": "#3BE08A"
+      },
+      "minecraft:interact": {
+        "interactions": [
+          {
+            "interact_text": "Open PvP Bot Settings",
+            "on_interact": "pvpbot:noop"
+          }
+        ]
+      },
+      "minecraft:equippable": {
+        "slots": [
+          { "slot": "slot.weapon.mainhand" },
+          { "slot": "slot.weapon.offhand" },
+          { "slot": "slot.armor.head" },
+          { "slot": "slot.armor.chest" },
+          { "slot": "slot.armor.legs" },
+          { "slot": "slot.armor.feet" }
+        ]
+      },
+      "minecraft:inventory": {
+        "container_type": "inventory",
+        "inventory_size": 200,
+        "private": true
+      }
+    },
+    "events": {
+      "pvpbot:noop": {}
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "pvpbot:crystal_bot",
+      "materials": {
+        "default": "entity_alphatest"
+      },
+      "geometry": {
+        "default": "geometry.pvpbot.crystal_bot"
+      },
+      "textures": {
+        "default": "textures/entity/pvpbot_crystal_bot"
+      },
+      "render_controllers": [
+        "controller.render.pvpbot.crystal_bot"
+      ],
+      "enable_attachables": true,
+      "hide_armor": false,
+      "held_item_ignores_lighting": true,
+      "scripts": {
+        "scale": "0.9375",
+        "animate": [
+          "move.arms",
+          "move.legs",
+          "bob",
+          "holding",
+          "head_follow"
+        ],
+        "pre_animation": [
+          "variable.helmet_layer_visible = query.property('pvpbot:has_head_gear');"
+        ]
+      },
+      "animations": {
+        "move.arms": "animation.player.move.arms",
+        "move.legs": "animation.player.move.legs",
+        "bob": "animation.player.bob",
+        "holding": "animation.player.holding",
+        "swing": "animation.pvpbot.crystal_bot.swing",
+        "dash_leap": "animation.pvpbot.crystal_bot.dash_leap",
+        "head_follow": "animation.pvpbot.crystal_bot.head_follow"
+      }
+    }
+  }
+}

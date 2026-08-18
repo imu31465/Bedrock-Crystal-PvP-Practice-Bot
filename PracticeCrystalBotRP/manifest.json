@@ -1,0 +1,17 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Practice CrystalPvP Bot RP",
+    "description": "Resources for the summonable CrystalPvP bot.",
+    "uuid": "e51a943e-c219-44f8-9a8d-8d08ab70834f",
+    "version": [1, 1, 40],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "196956e1-e553-4477-8da6-e0932b81eaf7",
+      "version": [1, 1, 3]
+    }
+  ]
+}
