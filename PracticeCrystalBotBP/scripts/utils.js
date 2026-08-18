@@ -205,9 +205,12 @@ export function isLocationInsideBotBoundary(location) {
   if (!s.boundaryEnabled) return true;
   const minX = s.boundaryMinX - 0.5;
   const maxX = s.boundaryMaxX + 0.5;
+  const minY = s.boundaryMinY;
+  const maxY = s.boundaryMaxY;
   const minZ = s.boundaryMinZ - 0.5;
   const maxZ = s.boundaryMaxZ + 0.5;
   return location.x >= minX && location.x <= maxX &&
+         location.y >= minY && location.y <= maxY &&
          location.z >= minZ && location.z <= maxZ;
 }
 
