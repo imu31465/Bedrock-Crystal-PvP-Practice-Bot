@@ -260,14 +260,23 @@ function tagToConfig(tagStr, uid, bot) {
 }
 
 export function normalizeGlobalSettings(settings) {
+  // Parse raw inputs first, then auto-swap min/max so that min <= max.
+  // Without this, if the user accidentally enters Min Y=36 / Max Y=-60,
+  // the bot gets clamped to a single point and frozen forever.
+  const rawMinX = Number(settings?.boundaryMinX ?? -49);
+  const rawMaxX = Number(settings?.boundaryMaxX ?? 49);
+  const rawMinY = Number(settings?.boundaryMinY ?? -60);
+  const rawMaxY = Number(settings?.boundaryMaxY ?? 38);
+  const rawMinZ = Number(settings?.boundaryMinZ ?? 115);
+  const rawMaxZ = Number(settings?.boundaryMaxZ ?? 199);
   return {
     boundaryEnabled: settings?.boundaryEnabled ?? true,
-    boundaryMinX: Number(settings?.boundaryMinX ?? -49),
-    boundaryMaxX: Number(settings?.boundaryMaxX ?? 49),
-    boundaryMinY: Number(settings?.boundaryMinY ?? -60),
-    boundaryMaxY: Number(settings?.boundaryMaxY ?? 38),
-    boundaryMinZ: Number(settings?.boundaryMinZ ?? 115),
-    boundaryMaxZ: Number(settings?.boundaryMaxZ ?? 199),
+    boundaryMinX: Math.min(rawMinX, rawMaxX),
+    boundaryMaxX: Math.max(rawMinX, rawMaxX),
+    boundaryMinY: Math.min(rawMinY, rawMaxY),
+    boundaryMaxY: Math.max(rawMinY, rawMaxY),
+    boundaryMinZ: Math.min(rawMinZ, rawMaxZ),
+    boundaryMaxZ: Math.max(rawMinZ, rawMaxZ),
   };
 }
 

@@ -5860,9 +5860,12 @@ function patchShouldJumpDash(bot, target, config, moveDirection) {
 }
 function isLocationInsideBotBoundary(location) {
   const settings = normalizeGlobalSettings(globalSettings);
+  if (!settings.boundaryEnabled) return true;
   return (
     location.x >= settings.boundaryMinX - 0.5 &&
     location.x <= settings.boundaryMaxX + 0.5 &&
+    location.y >= settings.boundaryMinY &&
+    location.y <= settings.boundaryMaxY &&
     location.z >= settings.boundaryMinZ - 0.5 &&
     location.z <= settings.boundaryMaxZ + 0.5
   );
@@ -5871,12 +5874,15 @@ function clampLocationToBotBoundary(location) {
   const settings = normalizeGlobalSettings(globalSettings);
   return {
     x: Math.max(
-      settings.boundaryMinX + 1.5,
+      settings.boundaryMinX + 0.5,
       Math.min(settings.boundaryMaxX - 0.5, location.x),
     ),
-    y: location.y,
+    y: Math.max(
+      settings.boundaryMinY,
+      Math.min(settings.boundaryMaxY, location.y),
+    ),
     z: Math.max(
-      settings.boundaryMinZ + 1.5,
+      settings.boundaryMinZ + 0.5,
       Math.min(settings.boundaryMaxZ - 0.5, location.z),
     ),
   };

@@ -407,7 +407,10 @@ export function patchFindMovementStep(dimension, origin, moveDirection, aggressi
 
 function patchFindDescendStep(dimension, origin, targetLocation, moveDirection) {
   if (!targetLocation || targetLocation.y >= origin.y - 0.1) return undefined;
-  const distances = [0, 0.35, 0.7, 1.05, 1.35];
+  // Widened horizontal search distances so the bot can find a descend spot
+  // even when the target is offset diagonally (e.g. standing on the edge
+  // of a 3x3 hole the target is in). Old max was 1.35, which was too tight.
+  const distances = [0, 0.35, 0.7, 1.05, 1.35, 1.75, 2.2, 2.7];
   const yOffsets = [-1, -2, -3, -4, -5, -6, -7, -8, -9, -10];
   let best, bestScore = Number.POSITIVE_INFINITY;
   for (const step of distances) {
@@ -577,7 +580,24 @@ function patchTryJumpDashTeleport(bot, target, config, moveDirection) {
   const toTarget = normalize2D(vectorTo(bot.location, target.location));
   const forwardDot = moveDirection.x * toTarget.x + moveDirection.z * toTarget.z;
   const dashScale = forwardDot < 0.25 ? 0.35 : forwardDot < 0.7 ? 0.6 : 1;
-  const landing = patchFindMovementStep(bot.dimension, addVector(bot.location, { x: moveDirection.x * 0.45 * dashScale, y: 0.55, z: moveDirection.z * 0.45 * dashScale }), moveDirection, dashScale >= 0.6);
+
+  // Look for a landing spot using the normal movement step search (covers
+  // small up/down steps around the bot's current height).
+  let landing = patchFindMovementStep(bot.dimension, addVector(bot.location, { x: moveDirection.x * 0.45 * dashScale, y: 0.55, z: moveDirection.z * 0.45 * dashScale }), moveDirection, dashScale >= 0.6);
+
+  // Fallback: if no landing spot at the same height, look DOWN aggressively.
+  // This is what makes the bot dash down off ledges toward targets below.
+  // Without this, the bot just stands at the top of a 3+ block drop and
+  // never engages a target that's underneath it.
+  if (!landing) {
+    const yDeltas = [-1, -2, -3, -4, -5, -6, -7, -8];
+    for (const dy of yDeltas) {
+      const probe = addVector(bot.location, { x: moveDirection.x * 0.55 * dashScale, y: dy, z: moveDirection.z * 0.55 * dashScale });
+      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(probe)) continue;
+      if (isSafeStandingLocation(bot.dimension, probe)) { landing = probe; break; }
+    }
+  }
+
   if (!landing) return false;
   try {
     let snapped = patchSnapToBlockCenter(landing);
@@ -591,12 +611,15 @@ function patchTryJumpDashTeleport(bot, target, config, moveDirection) {
 }
 
 // ── Boundary ──
+// Use the SAME ±0.5 margin as isLocationInsideBotBoundary so there is no
+// "gap zone" where the bot is considered inside but still gets clamped
+// (that gap caused rubber-banding every tick when fighting near the edge).
 function clampLocationToBotBoundary(location) {
   const settings = normalizeGlobalSettings(globalSettings);
   return {
-    x: Math.max(settings.boundaryMinX + 1.5, Math.min(settings.boundaryMaxX - 0.5, location.x)),
+    x: Math.max(settings.boundaryMinX + 0.5, Math.min(settings.boundaryMaxX - 0.5, location.x)),
     y: Math.max(settings.boundaryMinY, Math.min(settings.boundaryMaxY, location.y)),
-    z: Math.max(settings.boundaryMinZ + 1.5, Math.min(settings.boundaryMaxZ - 0.5, location.z)),
+    z: Math.max(settings.boundaryMinZ + 0.5, Math.min(settings.boundaryMaxZ - 0.5, location.z)),
   };
 }
 
@@ -661,6 +684,28 @@ function patchTryEscapeStuck(bot, config, target) {
   return false;
 }
 
+// ── Anti-Float: detect when the bot is stranded in mid-air (e.g. the
+// platform it was standing on got blown up) and force it down.
+// Without this, applyImpulse with y=0 every tick cancels the physics
+// engine's gravity and the bot hovers forever.
+function patchFindGroundBelow(dimension, location, maxDepth = 20) {
+  const x = Math.floor(location.x);
+  const z = Math.floor(location.z);
+  const startY = Math.floor(location.y);
+  for (let dy = 0; dy <= maxDepth; dy++) {
+    const checkY = startY - dy;
+    const candidate = { x: location.x, y: checkY, z: location.z };
+    // Need air at feet+head and solid below
+    const feetBlock = getBlock(dimension, candidate);
+    const headBlock = getBlock(dimension, addVector(candidate, { x: 0, y: 1, z: 0 }));
+    const belowBlock = getBlock(dimension, addVector(candidate, { x: 0, y: -1, z: 0 }));
+    if (isAirBlock(feetBlock) && isAirBlock(headBlock) && isSolidBlock(belowBlock)) {
+      return { x: x + 0.5, y: checkY, z: z + 0.5 };
+    }
+  }
+  return undefined;
+}
+
 // ── Main Movement Handler ──
 export function handleMovement(bot, target, config) {
   const runtime = getRuntime(config.uid);
@@ -674,6 +719,28 @@ export function handleMovement(bot, target, config) {
       if (isSafeStandingLocation(bot.dimension, clampSnapped) && canOccupyLocation(bot.dimension, clampSnapped))
         bot.teleport(clampSnapped, { dimension: bot.dimension, facingLocation: addVector(target.location, { x: 0, y: 1.1, z: 0 }) });
     } catch {}
+  }
+  // ── Anti-Float ──
+  // If the bot is airborne AND no ground within the normal snap range,
+  // search much further down (up to 20 blocks). If ground is found close,
+  // teleport there. If ground is far, apply downward impulse so the physics
+  // engine actually makes the bot fall (applyImpulse with y=0 cancels gravity).
+  if (!grounded && globalTick > (runtime.jumpDashAirborneUntilTick ?? -9999)) {
+    const deepGround = patchFindGroundBelow(bot.dimension, bot.location, 20);
+    if (deepGround) {
+      const dropDistance = bot.location.y - deepGround.y;
+      if (dropDistance <= 3) {
+        // Close enough to snap-teleport
+        try { bot.teleport(deepGround, { dimension: bot.dimension, facingLocation: addVector(target.location, { x: 0, y: 1.1, z: 0 }) }); } catch {}
+      } else {
+        // Far fall: apply downward impulse to let physics handle it
+        try { bot.applyImpulse({ x: 0, y: -0.35, z: 0 }); } catch {}
+      }
+    } else {
+      // No ground found within 20 blocks — still apply downward impulse
+      // in case the bot is above a void or very deep drop.
+      try { bot.applyImpulse({ x: 0, y: -0.35, z: 0 }); } catch {}
+    }
   }
   const toTarget = vectorTo(bot.location, target.location);
   let planar = normalize2D(toTarget);
@@ -725,7 +792,14 @@ export function handleMovement(bot, target, config) {
   }
   try { bot.applyImpulse(impulse); } catch {}
   if (jumpDashTriggered) {
-    patchTryJumpDashTeleport(bot, target, config, moveDirection);
+    // If the dash teleport fails (no landing spot found, e.g. due to
+    // boundary filter rejecting all candidates), cancel the airborne flag
+    // immediately. Otherwise the bot hovers in mid-air for several ticks
+    // because handleMovement's opening snap-to-ground is skipped while
+    // jumpDashAirborneUntilTick is in the future.
+    if (!patchTryJumpDashTeleport(bot, target, config, moveDirection)) {
+      runtime.jumpDashAirborneUntilTick = globalTick;
+    }
     return;
   }
   
@@ -771,8 +845,20 @@ export function handleMovement(bot, target, config) {
     }
   }
   
+  // Candidate selection priority:
+  // 1. If airborne, try to snap to a standing location below us first.
+  // 2. If target is below us by more than 1.5 blocks, prioritize descending
+  //    toward the target over walking forward at the same height. The old
+  //    code only called patchFindDescendStep as a fallback AFTER forwardStep
+  //    failed, which meant the bot would never jump off a ledge to chase
+  //    a target that was below and slightly to the side.
+  const targetBelowSignificantly = target.location.y < bot.location.y - 1.5;
+  const descendStep = targetBelowSignificantly
+    ? patchFindDescendStep(bot.dimension, bot.location, target.location, planar)
+    : undefined;
+
   const candidate = (!groundedNow ? findNearestStandingLocation(bot.dimension, bot.location, [0, -1, -2, -3, -4, -5]) : undefined) ??
-    patchFindDescendStep(bot.dimension, bot.location, target.location, planar) ??
+    descendStep ??
     (retreatWalk ? patchFindMovementStep(bot.dimension, bot.location, retreatDirection, isStuck) : undefined) ??
     (retreatWalk ? patchFindMovementStep(bot.dimension, bot.location, strafe, isStuck) : undefined) ??
     (retreatWalk ? patchFindMovementStep(bot.dimension, bot.location, { x: -strafe.x, y: 0, z: -strafe.z }, isStuck) : undefined) ??

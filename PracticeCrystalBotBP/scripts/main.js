@@ -67,12 +67,12 @@ function tickBots() {
     // Skip if tickInterval says so
     if (config.tickInterval > 1 && globalTick % config.tickInterval !== 0) continue;
 
-    // ── Boundary enforcement (HIGHEST PRIORITY — before everything else) ──
+    // ── Boundary enforcement ──
+    // NOTE: Run AFTER isConfiguring/isSpawnProtected so we don't teleport
+    // the bot while the player is opening the settings UI or while spawn
+    // protection is still active. Running this first caused the bot to
+    // rubber-band every tick when fighting near the boundary edge.
     const gs = normalizeGlobalSettings(globalSettings || {});
-    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(bot.location)) {
-      enforceBotBoundary(bot, config);
-      continue; // Force return first, skip all other logic
-    }
 
     // Skip if configuring (and make invincible)
     if (runtime.isConfiguring) {
@@ -94,22 +94,27 @@ function tickBots() {
       continue;
     }
 
+    // ── Boundary enforcement ──
+    // Pull the bot back inside the boundary BEFORE target lookup. This must
+    // run even when the bot has no target yet, otherwise a bot summoned
+    // outside the boundary with no players nearby would be stuck forever.
+    // We already skipped configuring / disabled / spawn-protected above.
+    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(bot.location)) {
+      enforceBotBoundary(bot, config);
+      continue;
+    }
+
     // Staggered Target Finding
+    // On the very first tick (staggerOffset just assigned), or whenever we
+    // don't have a cached target yet, force a lookup so the bot recognizes
+    // enemies immediately after spawn instead of waiting up to 3 ticks.
     if (runtime.staggerOffset === undefined) runtime.staggerOffset = Math.floor(Math.random() * 3);
-    if (globalTick % 3 === runtime.staggerOffset) {
+    if (runtime.cachedTarget === undefined || globalTick % 3 === runtime.staggerOffset) {
       runtime.cachedTarget = findNearestTarget(bot);
     }
     const target = runtime.cachedTarget;
 
     if (!target) {
-      ensureBotEquipmentIntegrity(bot, config);
-      patchSyncVisualEquipmentSlots(bot);
-      continue;
-    }
-
-    // Skip if target is outside boundary
-    if (gs.boundaryEnabled && !isLocationInsideBotBoundary(target.location)) {
-      runtime.cachedTarget = null;
       ensureBotEquipmentIntegrity(bot, config);
       patchSyncVisualEquipmentSlots(bot);
       continue;

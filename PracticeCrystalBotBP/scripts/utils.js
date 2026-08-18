@@ -215,14 +215,19 @@ export function isLocationInsideBotBoundary(location) {
 }
 
 // ── Target Finding ──
-export function findClosestPlayer(location, dimension, maxDist = 16, insideBoundaryOnly = false) {
+// NOTE: We intentionally do NOT filter targets by boundary here. The bot
+// itself stays inside the boundary (enforced in main.js), but it should
+// still be able to target players/mobs that step just outside the edge.
+// Filtering targets by boundary caused the bot to lose target every time
+// the player got knocked back by a crystal explosion, which produced the
+// "freezes periodically while still switching hotbar" symptom.
+export function findClosestPlayer(location, dimension, maxDist = 16, _insideBoundaryOnly = false) {
   let closest, best = maxDist;
   for (const p of getPlayersInDimension(dimension)) {
     try {
       const gm = p.getGameMode?.();
       if (gm && gm !== GameMode.Survival && gm !== GameMode.Adventure) continue;
     } catch {}
-    if (insideBoundaryOnly && !isLocationInsideBotBoundary(p.location)) continue;
     const d = distance(location, p.location);
     if (d < best) { closest = p; best = d; }
   }
