@@ -8,6 +8,16 @@ import {
   PATCH_ESCAPE_TELEPORT_COOLDOWN, PATCH_ENCHANTED_GOLDEN_APPLE_ID,
   PATCH_GOLDEN_APPLE_ID, PATCH_FOOD_REUSE_BUFFER_TICKS,
   PATCH_FOOD_USE_COOLDOWN_TICKS, AIR_ID, PATCH_EXPLOSION_PRESERVE_IDS,
+  MOVE_SPEED_WALK, MOVE_SPEED_SPRINT, MOVE_SPEED_STRAFE, MOVE_SPEED_RETREAT,
+  MOVE_SPEED_WATER, MOVE_MAX_ACCEL_GROUND, MOVE_MAX_ACCEL_AIR,
+  MOVE_JUMP_IMPULSE, MOVE_JUMP_COOLDOWN_TICKS, MOVE_SPRINT_JUMP_BONUS,
+  NAV_REPATH_INTERVAL_TICKS, NAV_REPATH_FAIL_INTERVAL_TICKS,
+  NAV_MAX_EXPANSIONS, NAV_MAX_PATH_DISTANCE, NAV_WAYPOINT_REACH_RADIUS,
+  NAV_WAYPOINT_REACH_RADIUS_Y, NAV_PATH_MAX_AGE_TICKS,
+  STUCK_DETECT_MOVE_EPSILON, STUCK_STAGE_JIGGLE_TICKS, STUCK_STAGE_DETOUR_TICKS,
+  STUCK_STAGE_MINE_TICKS, STUCK_STAGE_PILLAR_TICKS, STUCK_STAGE_TELEPORT_TICKS,
+  STUCK_DETOUR_HOLD_TICKS, LOOK_TURN_SPEED_COMBAT, LOOK_TURN_SPEED_TRAVEL,
+  TACTIC_ORBIT_DISTANCE_TOLERANCE,
 } from "./constants.js";
 import { globalTick, globalSettings } from "./state.js";
 import {
@@ -22,12 +32,23 @@ import {
   countItemInContainer, findNearestTarget, getPlayerByName,
   findClosestPlayer, patchApplyAimJitter, getExplosionLocation,
   isLocationInsideBotBoundary, formatError,
+  getBotVelocity, applyHorizontalSteering, isBotOnGround,
 } from "./utils.js";
 import { getRuntime, normalizeGlobalSettings } from "./config.js";
 import {
   selectBestSword, equipMainhandItem, consumeManagedItem,
   syncBotLoadout, selectBestPickaxe,
 } from "./inventory.js";
+import {
+  navFindPath, navFindStandableNear, navIsStandableCell, navCanOccupy,
+  navFindGroundY, navIsPassableBlock, navIsWaterBlock, navHasWalkableLine,
+} from "./navigation.js";
+import {
+  evaluateCombatTactic, tacticTryPillarUp, tacticTryBridgeToward,
+  tacticIsDangerousLedge, tacticPlaceBlockAt,
+  TACTIC_ENGAGE, TACTIC_CLOSE_GAP, TACTIC_CLIMB, TACTIC_DESCEND,
+  TACTIC_KITE, TACTIC_HIGH_GROUND, TACTIC_HOLD,
+} from "./tactics.js";
 
 // ── Golden Apple Effects ──
 const PATCH_RECOVERY_LOW_HEALTH_RATIO = 0.5;
@@ -359,261 +380,258 @@ export function handlePearlMove(bot, target, config) {
   }, PEARL_VISUAL_DELAY);
 }
 
-// ── Movement Helpers ──
-function patchIsEntityOnGroundSafe(entity) {
-  try { if (typeof entity?.isOnGround === "boolean") return entity.isOnGround; } catch {}
-  const grounded = findNearestStandingLocation(entity.dimension, entity.location, [0, -1]);
-  return !!grounded && Math.abs(grounded.y - entity.location.y) <= 0.45;
+// ══════════════════════════════════════════════════════════════
+// Movement Engine v2
+// 方針:
+//  - teleport による毎tickの位置補正をやめ、applyImpulse による物理移動に統一。
+//    (teleport は速度をリセットするため、毎tick呼ぶと「がたがた」振動していた)
+//  - 1歩先だけを見る貪欲探索をやめ、A* の経路に沿って進む。
+//  - スタック時は段階的にエスカレーション(揺らし→迂回→採掘→柱/橋→最後の手段のTP)。
+// ══════════════════════════════════════════════════════════════
+
+// ── Ground / Water state ──
+function moveGetSurfaceState(bot) {
+  const feetBlock = getBlock(bot.dimension, floorLocation(bot.location));
+  const inWater = navIsWaterBlock(feetBlock);
+  const onGround = isBotOnGround(bot);
+  return { inWater, onGround };
 }
 
-function patchUpdateStuckState(bot, runtime) {
+// ── Stuck detection ──
+// 「命令した方向へ実際に進めているか」で判定する。
+// 単純な移動量ではノックバック中や周回中に誤検知するため、
+// 意図した方向への進捗(dot product)を見る。
+function moveUpdateStuckState(bot, runtime, intendedDirection) {
   const previous = runtime.lastMovementLocation;
-  runtime.lastMovementLocation = { ...bot.location };
-  if (!previous) { runtime.stuckTicks = 0; return false; }
-  const moved = Math.hypot(bot.location.x - previous.x, bot.location.z - previous.z);
-  runtime.stuckTicks = moved < 0.12 ? Number(runtime.stuckTicks ?? 0) + 1 : 0;
-  return runtime.stuckTicks >= 4;
+  const current = { x: bot.location.x, y: bot.location.y, z: bot.location.z };
+  runtime.lastMovementLocation = current;
+  if (!previous) { runtime.stuckTicks = 0; return 0; }
+
+  const deltaX = current.x - previous.x;
+  const deltaZ = current.z - previous.z;
+  const moved = Math.hypot(deltaX, deltaZ);
+  const verticalMoved = Math.abs(current.y - previous.y);
+  const wantsToMove = intendedDirection && Math.hypot(intendedDirection.x, intendedDirection.z) > 0.05;
+
+  if (!wantsToMove) { runtime.stuckTicks = 0; return 0; }
+  // 意図方向への前進成分
+  const progress = wantsToMove
+    ? deltaX * intendedDirection.x + deltaZ * intendedDirection.z
+    : moved;
+  // 落下・登坂中は「進んでいる」とみなす
+  if (progress >= STUCK_DETECT_MOVE_EPSILON || verticalMoved > 0.12) {
+    runtime.stuckTicks = 0;
+  } else {
+    runtime.stuckTicks = Number(runtime.stuckTicks ?? 0) + 1;
+  }
+  return Number(runtime.stuckTicks ?? 0);
 }
 
-export function patchFindMovementStep(dimension, origin, moveDirection, aggressive = false) {
-  const distances = aggressive ? [0.45, 0.7, 0.95, 1.2] : [0.28, 0.45, 0.65];
-  const yOffsets = aggressive ? [0, -1, -2, 1, 2] : [0, -1, 1, -2];
-  for (const step of distances) {
-    const base = addVector(origin, { x: moveDirection.x * step, y: 0, z: moveDirection.z * step });
-    for (const yOffset of yOffsets) {
-      const candidate = addVector(base, { x: 0, y: yOffset, z: 0 });
-      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
-      if (isSafeStandingLocation(dimension, candidate)) return candidate;
-    }
-  }
-  
-  // Gap jumping for 1-block gaps
-  if (aggressive) {
-    const jumpDistances = [2.0, 2.5, 3.0];
-    for (const step of jumpDistances) {
-      const candidate = addVector(origin, { x: moveDirection.x * step, y: 0, z: moveDirection.z * step });
-      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
-      if (isSafeStandingLocation(dimension, candidate)) {
-        // Ensure there is clearance to jump
-        if (isAirBlock(getBlock(dimension, addVector(origin, {x: 0, y: 1, z: 0}))) &&
-            isAirBlock(getBlock(dimension, addVector(origin, {x: 0, y: 2, z: 0})))) {
-          return candidate;
-        }
-      }
-    }
-  }
-  return undefined;
+// ── Path following ──
+function moveGoalKey(goal) {
+  return `${Math.floor(goal.x)}|${Math.floor(goal.y)}|${Math.floor(goal.z)}`;
 }
 
-function patchFindDescendStep(dimension, origin, targetLocation, moveDirection) {
-  if (!targetLocation || targetLocation.y >= origin.y - 0.1) return undefined;
-  // Widened horizontal search distances so the bot can find a descend spot
-  // even when the target is offset diagonally (e.g. standing on the edge
-  // of a 3x3 hole the target is in). Old max was 1.35, which was too tight.
-  const distances = [0, 0.35, 0.7, 1.05, 1.35, 1.75, 2.2, 2.7];
-  const yOffsets = [-1, -2, -3, -4, -5, -6, -7, -8, -9, -10];
-  let best, bestScore = Number.POSITIVE_INFINITY;
-  for (const step of distances) {
-    const base = addVector(origin, { x: moveDirection.x * step, y: 0, z: moveDirection.z * step });
-    for (const yOffset of yOffsets) {
-      const candidate = addVector(base, { x: 0, y: yOffset, z: 0 });
-      if (candidate.y >= origin.y - 0.2 || !isSafeStandingLocation(dimension, candidate)) continue;
-      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
-      const score = Math.abs(candidate.y - targetLocation.y) + Math.hypot(candidate.x - targetLocation.x, candidate.z - targetLocation.z) * 0.25;
-      if (score < bestScore) { best = candidate; bestScore = score; }
-    }
+// 複数Botが同じtickに一斉に経路探索するとラグの原因になるため、
+// uid由来の固定オフセットで探索tickを分散させる。
+function moveRepathSlotOffset(runtime, uid) {
+  if (runtime.navSlotOffset === undefined) {
+    let hash = 0;
+    const text = `${uid ?? ""}`;
+    for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) | 0;
+    runtime.navSlotOffset = Math.abs(hash) % NAV_REPATH_INTERVAL_TICKS;
   }
-  return best;
+  return runtime.navSlotOffset;
 }
 
-function patchTryBuildStep(bot, config, moveDirection) {
-  const runtime = getRuntime(config.uid);
-  if (globalTick - Number(runtime.lastBuildStepTick ?? -9999) < 4) return undefined;
-  const origin = floorLocation(bot.location);
-  const front = { x: origin.x + Math.round(moveDirection.x), y: origin.y, z: origin.z + Math.round(moveDirection.z) };
-  if (front.x === origin.x && front.z === origin.z) return undefined;
-  const climbTargets = [addVector(front, { x: 0, y: 1, z: 0 }), addVector(front, { x: 0, y: 2, z: 0 })];
-  for (const target of climbTargets) {
-    if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(target)) continue;
-    if (isSafeStandingLocation(bot.dimension, target)) { runtime.lastBuildStepTick = globalTick; return target; }
+function moveShouldRepath(runtime, goal, uid) {
+  const elapsed = globalTick - Number(runtime.navLastPathTick ?? -9999);
+  const offset = moveRepathSlotOffset(runtime, uid);
+  if (!runtime.navPath || !runtime.navPath.length) {
+    const interval = runtime.navLastPathFailed ? NAV_REPATH_FAIL_INTERVAL_TICKS : NAV_REPATH_INTERVAL_TICKS;
+    // 経路が無い時は待ちすぎると動けないので、スロット分散は緩めに適用する
+    if (elapsed < interval) return false;
+    return ((globalTick + offset) % 3) === 0 || elapsed >= interval * 2;
   }
-  return undefined;
-}
-
-// ── Mining ──
-
-// Check if the bot is embedded (head or feet inside a solid block)
-function patchIsBotEmbedded(bot) {
-  const feetLoc = floorLocation(bot.location);
-  const headLoc = floorLocation(addVector(bot.location, { x: 0, y: 1, z: 0 }));
-  const feetBlock = getBlock(bot.dimension, feetLoc);
-  const headBlock = getBlock(bot.dimension, headLoc);
-  return (feetBlock && !isAirBlock(feetBlock)) || (headBlock && !isAirBlock(headBlock));
-}
-
-function patchFindMineTarget(bot, direction, targetLoc) {
-  // 進行方向に進んだ場合のBotの当たり判定（幅0.6、高さ1.8）を計算して、ぶつかるブロックを特定する
-  const checkDistances = [0.4, 0.8, 1.2];
-  
-  for (const dist of checkDistances) {
-    const shiftX = direction.x * dist;
-    const shiftZ = direction.z * dist;
-    
-    // 足元(y=0)、頭(y=1)の2段をデフォルトでチェック
-    const yLevels = [1, 0];
-    // ターゲットが上や下にいる場合は、上下のブロックもチェック対象に追加
-    if (targetLoc) {
-      if (targetLoc.y >= bot.location.y + 1.5) yLevels.push(2);
-      if (targetLoc.y < bot.location.y - 1.0) yLevels.push(-1);
-    }
-    
-    // Botの幅（約0.6）をカバーするための中心と端のオフセット
-    const offsets = [
-      { x: 0, z: 0 },
-      { x: 0.3, z: 0 },
-      { x: -0.3, z: 0 },
-      { x: 0, z: 0.3 },
-      { x: 0, z: -0.3 },
-    ];
-    
-    for (const yOff of yLevels) {
-      for (const offset of offsets) {
-        const checkLoc = {
-          x: bot.location.x + shiftX + offset.x,
-          y: bot.location.y + yOff,
-          z: bot.location.z + shiftZ + offset.z
-        };
-        const blockLoc = floorLocation(checkLoc);
-        const block = getBlock(bot.dimension, blockLoc);
-        if (block && !isAirBlock(block) && !PATCH_EXPLOSION_PRESERVE_IDS.has(block.typeId)) {
-          return blockLoc;
-        }
-      }
-    }
+  if (elapsed >= NAV_PATH_MAX_AGE_TICKS) return true;
+  // ゴールが大きく動いた場合は再計算
+  if (runtime.navGoalKey !== moveGoalKey(goal) && elapsed >= NAV_REPATH_INTERVAL_TICKS) {
+    return ((globalTick + offset) % NAV_REPATH_INTERVAL_TICKS) === 0 || elapsed >= NAV_REPATH_INTERVAL_TICKS * 2;
   }
-  return undefined;
-}
-
-function patchTryMineBlock(bot, config, moveDirection, primaryDirection, target) {
-  if (!config.enableMining) return false;
-  const runtime = getRuntime(config.uid);
-  if (globalTick < Number(runtime.miningUntilTick ?? 0)) return true; // Already mining
-
-  // First: check if bot is embedded in a block — mine feet/head directly
-  const feetLoc = floorLocation(bot.location);
-  const headLoc = floorLocation(addVector(bot.location, { x: 0, y: 1, z: 0 }));
-  let targetBlockLocation = undefined;
-
-  const headBlock = getBlock(bot.dimension, headLoc);
-  if (headBlock && !isAirBlock(headBlock) && !PATCH_EXPLOSION_PRESERVE_IDS.has(headBlock.typeId)) {
-    targetBlockLocation = headLoc;
-  }
-  if (!targetBlockLocation) {
-    const feetBlock = getBlock(bot.dimension, feetLoc);
-    if (feetBlock && !isAirBlock(feetBlock) && !PATCH_EXPLOSION_PRESERVE_IDS.has(feetBlock.typeId)) {
-      targetBlockLocation = feetLoc;
-    }
-  }
-
-  // If not embedded, use bounding box collision detection in the intended movement direction
-  if (!targetBlockLocation) {
-    const mdLen = Math.hypot(moveDirection.x, moveDirection.z);
-    const useDir = mdLen > 0.1 ? moveDirection : primaryDirection;
-    targetBlockLocation = patchFindMineTarget(bot, useDir, target?.location);
-  }
-
-  if (!targetBlockLocation) return false;
-
-  const pickaxeStats = selectBestPickaxe(bot);
-  if (!pickaxeStats) {
-    // No pickaxe — try setblock directly with a shorter delay
-    runtime.miningUntilTick = globalTick + 5;
-    faceBotToward(bot, { x: targetBlockLocation.x + 0.5, y: targetBlockLocation.y + 0.5, z: targetBlockLocation.z + 0.5 });
-    tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.swing");
-    const loc = targetBlockLocation;
-    system.runTimeout(() => {
-      try {
-        if (isEntityUsable(bot)) {
-          patchRunDimensionCommandNoThrow(bot.dimension, `setblock ${quoteCoord(loc.x)} ${quoteCoord(loc.y)} ${quoteCoord(loc.z)} air destroy`);
-        }
-      } catch {}
-    }, 5);
-    return true;
-  }
-
-  const mineDelay = Math.max(3, Math.floor(20 / Math.max(1, pickaxeStats.speed)));
-  runtime.miningUntilTick = globalTick + mineDelay;
-
-  faceBotToward(bot, { x: targetBlockLocation.x + 0.5, y: targetBlockLocation.y + 0.5, z: targetBlockLocation.z + 0.5 });
-  tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.swing");
-
-  const loc = targetBlockLocation;
-  system.runTimeout(() => {
-    try {
-      if (isEntityUsable(bot)) {
-        patchRunDimensionCommandNoThrow(bot.dimension, `setblock ${quoteCoord(loc.x)} ${quoteCoord(loc.y)} ${quoteCoord(loc.z)} air destroy`);
-        selectBestSword(bot);
-      }
-    } catch {}
-  }, mineDelay);
-
-  return true;
-}
-
-// ── Jump Dash ──
-function patchHasJumpDashClearance(dimension, location) {
-  return isAirBlock(getBlock(dimension, addVector(location, { x: 0, y: 1, z: 0 }))) &&
-         isAirBlock(getBlock(dimension, addVector(location, { x: 0, y: 2, z: 0 })));
-}
-
-function patchShouldJumpDash(bot, target, config, moveDirection) {
-  if (!config?.jumpDash) return false;
-  const runtime = getRuntime(config.uid);
-  if (globalTick - runtime.lastJumpDashTick < PATCH_JUMP_DASH_COOLDOWN_TICKS) return false;
-  if (!patchIsEntityOnGroundSafe(bot) || !patchHasJumpDashClearance(bot.dimension, bot.location)) return false;
-  if (distance(bot.location, target.location) <= config.maintainDistance - 0.1) return false;
-  return Math.hypot(moveDirection.x, moveDirection.z) > PATCH_JUMP_DASH_MIN_DIRECTION;
-}
-
-function patchTryJumpDashTeleport(bot, target, config, moveDirection) {
-  const runtime = getRuntime(config.uid);
-  const toTarget = normalize2D(vectorTo(bot.location, target.location));
-  const forwardDot = moveDirection.x * toTarget.x + moveDirection.z * toTarget.z;
-  const dashScale = forwardDot < 0.25 ? 0.35 : forwardDot < 0.7 ? 0.6 : 1;
-
-  // Look for a landing spot using the normal movement step search (covers
-  // small up/down steps around the bot's current height).
-  let landing = patchFindMovementStep(bot.dimension, addVector(bot.location, { x: moveDirection.x * 0.45 * dashScale, y: 0.55, z: moveDirection.z * 0.45 * dashScale }), moveDirection, dashScale >= 0.6);
-
-  // Fallback: if no landing spot at the same height, look DOWN aggressively.
-  // This is what makes the bot dash down off ledges toward targets below.
-  // Without this, the bot just stands at the top of a 3+ block drop and
-  // never engages a target that's underneath it.
-  if (!landing) {
-    const yDeltas = [-1, -2, -3, -4, -5, -6, -7, -8];
-    for (const dy of yDeltas) {
-      const probe = addVector(bot.location, { x: moveDirection.x * 0.55 * dashScale, y: dy, z: moveDirection.z * 0.55 * dashScale });
-      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(probe)) continue;
-      if (isSafeStandingLocation(bot.dimension, probe)) { landing = probe; break; }
-    }
-  }
-
-  if (!landing) return false;
-  try {
-    let snapped = patchSnapToBlockCenter(landing);
-    if (!isSafeStandingLocation(bot.dimension, snapped) || !canOccupyLocation(bot.dimension, snapped)) return false;
-    if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(snapped)) { const c = clampLocationToBotBoundary(snapped); if (isSafeStandingLocation(bot.dimension, c) && canOccupyLocation(bot.dimension, c)) snapped = c; else return false; }
-    bot.teleport(snapped, { dimension: bot.dimension, facingLocation: addVector(target.location, { x: 0, y: 1.1, z: 0 }) });
-    runtime.jumpDashAirborneUntilTick = globalTick + 1;
-    return true;
-  } catch {}
   return false;
 }
 
+function moveRequestPath(bot, runtime, goal, config) {
+  const travelDistance = distance(bot.location, goal);
+  if (travelDistance > NAV_MAX_PATH_DISTANCE) {
+    // 遠すぎる場合はゴール方向の中間点を目標にする
+    const direction = normalize2D(vectorTo(bot.location, goal));
+    const midpoint = {
+      x: bot.location.x + direction.x * NAV_MAX_PATH_DISTANCE * 0.7,
+      y: bot.location.y,
+      z: bot.location.z + direction.z * NAV_MAX_PATH_DISTANCE * 0.7,
+    };
+    goal = navFindStandableNear(bot.dimension, midpoint, 3, 6) ?? midpoint;
+  }
+  runtime.navLastPathTick = globalTick;
+  runtime.navGoalKey = moveGoalKey(goal);
+  const result = navFindPath(bot.dimension, bot.location, goal, {
+    maxExpansions: NAV_MAX_EXPANSIONS,
+    maxFall: 4,
+    maxJumpGap: config.jumpDash === false ? 1 : 3,
+    respectBoundary: !!globalSettings.boundaryEnabled,
+  });
+  if (!result || !result.waypoints.length) {
+    runtime.navPath = undefined;
+    runtime.navLastPathFailed = true;
+    return false;
+  }
+  runtime.navPath = result.waypoints;
+  runtime.navPathComplete = result.complete;
+  runtime.navLastPathFailed = false;
+  return true;
+}
+
+// 到達済みのウェイポイントを捨てて、次に向かうべき点を返す
+function moveConsumeWaypoint(bot, runtime) {
+  const path = runtime.navPath;
+  if (!path || !path.length) return undefined;
+  while (path.length) {
+    const waypoint = path[0];
+    const horizontal = Math.hypot(waypoint.x - bot.location.x, waypoint.z - bot.location.z);
+    const vertical = Math.abs(waypoint.y - bot.location.y);
+    if (horizontal <= NAV_WAYPOINT_REACH_RADIUS && vertical <= NAV_WAYPOINT_REACH_RADIUS_Y) {
+      path.shift();
+      continue;
+    }
+    // 経路のショートカット: 2つ先が直接歩けるなら1つ飛ばす（カクつき防止）
+    if (path.length >= 2 && horizontal < 2.2) {
+      const next = path[1];
+      if (navHasWalkableLine(bot.dimension, bot.location, next, 1, 3)) {
+        path.shift();
+        continue;
+      }
+    }
+    return waypoint;
+  }
+  runtime.navPath = undefined;
+  return undefined;
+}
+
+// ── Jump ──
+function moveHasJumpClearance(bot) {
+  const feet = floorLocation(bot.location);
+  return navIsPassableBlock(getBlock(bot.dimension, { x: feet.x, y: feet.y + 2, z: feet.z }));
+}
+
+function moveTryJump(bot, runtime, config, extraForward = 0, direction = undefined) {
+  if (config.jumpDash === false) return false;
+  if (globalTick - Number(runtime.lastJumpTick ?? -9999) < MOVE_JUMP_COOLDOWN_TICKS) return false;
+  if (!isBotOnGround(bot)) return false;
+  if (!moveHasJumpClearance(bot)) return false;
+  const impulse = { x: 0, y: MOVE_JUMP_IMPULSE, z: 0 };
+  if (direction && extraForward > 0) {
+    impulse.x = direction.x * extraForward;
+    impulse.z = direction.z * extraForward;
+  }
+  try { bot.applyImpulse(impulse); } catch { return false; }
+  runtime.lastJumpTick = globalTick;
+  runtime.lastJumpDashTick = globalTick;
+  tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.dash_leap");
+  return true;
+}
+
+// 次のウェイポイントが上段の場合、ジャンプが必要かを判定
+function moveNeedsJumpForWaypoint(bot, waypoint) {
+  const heightDelta = waypoint.y - bot.location.y;
+  if (heightDelta >= 0.55) return true;
+  if (waypoint.jump) return true;
+  return false;
+}
+
+// 進行方向に腰高のブロックがあるならジャンプで超える
+function moveHasStepObstacle(bot, direction) {
+  const probe = addVector(bot.location, { x: direction.x * 0.7, y: 0, z: direction.z * 0.7 });
+  const feet = floorLocation(probe);
+  const feetBlock = getBlock(bot.dimension, feet);
+  if (navIsPassableBlock(feetBlock)) return false;
+  // 1ブロック上が空いていれば登れる段差
+  const above = getBlock(bot.dimension, { x: feet.x, y: feet.y + 1, z: feet.z });
+  const above2 = getBlock(bot.dimension, { x: feet.x, y: feet.y + 2, z: feet.z });
+  return navIsPassableBlock(above) && navIsPassableBlock(above2);
+}
+
+// ── Mining ──
+function moveIsBotEmbedded(bot) {
+  const feet = floorLocation(bot.location);
+  const feetBlock = getBlock(bot.dimension, feet);
+  const headBlock = getBlock(bot.dimension, { x: feet.x, y: feet.y + 1, z: feet.z });
+  return !navIsPassableBlock(feetBlock) || !navIsPassableBlock(headBlock);
+}
+
+function moveFindMineTarget(bot, direction, targetLocation) {
+  const feet = floorLocation(bot.location);
+  // 1. 埋まっている場合は頭→足を優先で掘る
+  const embeddedCandidates = [
+    { x: feet.x, y: feet.y + 1, z: feet.z },
+    { x: feet.x, y: feet.y, z: feet.z },
+  ];
+  for (const candidate of embeddedCandidates) {
+    const block = getBlock(bot.dimension, candidate);
+    if (block && !isAirBlock(block) && !PATCH_EXPLOSION_PRESERVE_IDS.has(block.typeId)) return candidate;
+  }
+  // 2. 進行方向の当たり判定に触れるブロックを掘る
+  const horizontalOffsets = [{ x: 0, z: 0 }, { x: 0.3, z: 0 }, { x: -0.3, z: 0 }, { x: 0, z: 0.3 }, { x: 0, z: -0.3 }];
+  const yLevels = [1, 0];
+  if (targetLocation) {
+    if (targetLocation.y >= bot.location.y + 1.5) yLevels.unshift(2);
+    if (targetLocation.y < bot.location.y - 1.0) yLevels.push(-1);
+  }
+  for (const step of [0.55, 0.95, 1.35]) {
+    for (const yOffset of yLevels) {
+      for (const offset of horizontalOffsets) {
+        const probe = {
+          x: bot.location.x + direction.x * step + offset.x,
+          y: bot.location.y + yOffset,
+          z: bot.location.z + direction.z * step + offset.z,
+        };
+        const blockLocation = floorLocation(probe);
+        const block = getBlock(bot.dimension, blockLocation);
+        if (block && !isAirBlock(block) && !PATCH_EXPLOSION_PRESERVE_IDS.has(block.typeId)) return blockLocation;
+      }
+    }
+  }
+  return undefined;
+}
+
+function moveTryMineBlock(bot, config, direction, targetLocation) {
+  if (!config.enableMining) return false;
+  const runtime = getRuntime(config.uid);
+  if (globalTick < Number(runtime.miningUntilTick ?? 0)) return true; // 採掘中
+  const blockLocation = moveFindMineTarget(bot, direction, targetLocation);
+  if (!blockLocation) return false;
+
+  const pickaxeStats = selectBestPickaxe(bot);
+  const mineDelay = pickaxeStats ? Math.max(3, Math.floor(20 / Math.max(1, pickaxeStats.speed))) : 5;
+  runtime.miningUntilTick = globalTick + mineDelay;
+  faceBotToward(bot, { x: blockLocation.x + 0.5, y: blockLocation.y + 0.5, z: blockLocation.z + 0.5 });
+  tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.swing");
+  system.runTimeout(() => {
+    try {
+      if (!isEntityUsable(bot)) return;
+      patchRunDimensionCommandNoThrow(bot.dimension,
+        `setblock ${quoteCoord(blockLocation.x)} ${quoteCoord(blockLocation.y)} ${quoteCoord(blockLocation.z)} air destroy`);
+      selectBestSword(bot);
+      // 採掘後は経路が変わるので再探索させる
+      runtime.navPath = undefined;
+    } catch {}
+  }, mineDelay);
+  return true;
+}
+
 // ── Boundary ──
-// Use the SAME ±0.5 margin as isLocationInsideBotBoundary so there is no
-// "gap zone" where the bot is considered inside but still gets clamped
-// (that gap caused rubber-banding every tick when fighting near the edge).
+// isLocationInsideBotBoundary と同じ ±0.5 マージンを使う。
+// マージンが違うと「内側判定なのにクランプされる」帯ができ、毎tick引き戻されて振動した。
 function clampLocationToBotBoundary(location) {
   const settings = normalizeGlobalSettings(globalSettings);
   return {
@@ -625,10 +643,8 @@ function clampLocationToBotBoundary(location) {
 
 function findSafeBoundaryReturnLocation(bot) {
   const clamped = clampLocationToBotBoundary(bot.location);
-  for (const yOffset of [0, -1, 1, -2, 2, -3, 3, -4, 4]) {
-    const candidate = addVector(clamped, { x: 0, y: yOffset, z: 0 });
-    if (isSafeStandingLocation(bot.dimension, candidate) && isLocationInsideBotBoundary(candidate)) return candidate;
-  }
+  const grounded = navFindStandableNear(bot.dimension, clamped, 2, 5);
+  if (grounded && isLocationInsideBotBoundary(grounded)) return grounded;
   return clamped;
 }
 
@@ -638,257 +654,353 @@ export function enforceBotBoundary(bot, config) {
   try { bot.teleport(destination, { dimension: bot.dimension }); return true; } catch { return false; }
 }
 
-// ── Stuck Escape (穴・崩壊地形・埋没からの強制脱出) ──
-function patchTryEscapeStuck(bot, config, target) {
+// 境界の内側に押し戻す「力」を返す。teleport ではなく操舵で戻すので滑らか。
+function moveComputeBoundaryAvoidance(bot) {
+  if (!globalSettings.boundaryEnabled) return undefined;
   const settings = normalizeGlobalSettings(globalSettings);
-  const origin = bot.location;
-  // 近いリングから順に、高い位置を優先して安全な足場を探す(穴から這い上がる)
-  for (let radius = 1; radius <= 5; radius++) {
-    for (let dy = 3; dy >= -2; dy--) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        for (let dz = -radius; dz <= radius; dz++) {
-          if (dx === 0 && dz === 0) continue;
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
-          const candidate = { x: origin.x + dx, y: origin.y + dy, z: origin.z + dz };
-          if (settings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
-          if (!isSafeStandingLocation(bot.dimension, candidate)) continue;
-          try {
-            bot.teleport(candidate, { dimension: bot.dimension, facingLocation: target?.location });
-            return true;
-          } catch { return false; }
-        }
-      }
-    }
-  }
-  // 周囲に安全な場所がない → オーナー/最寄りプレイヤーの近くへ退避
-  const owner = getPlayerByName(config.ownerName) ?? findClosestPlayer(bot.location, bot.dimension, 32);
-  if (!owner) return false;
-  const ownerOrigin = owner.location;
-  for (let radius = 1; radius <= 3; radius++) {
-    for (let dy = 2; dy >= -2; dy--) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        for (let dz = -radius; dz <= radius; dz++) {
-          if (dx === 0 && dz === 0) continue;
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
-          const candidate = { x: ownerOrigin.x + dx, y: ownerOrigin.y + dy, z: ownerOrigin.z + dz };
-          if (settings.boundaryEnabled && !isLocationInsideBotBoundary(candidate)) continue;
-          if (!isSafeStandingLocation(bot.dimension, candidate)) continue;
-          try {
-            bot.teleport(candidate, { dimension: bot.dimension, facingLocation: target?.location });
-            return true;
-          } catch { return false; }
-        }
-      }
-    }
-  }
-  return false;
+  const margin = 1.5;
+  let pushX = 0, pushZ = 0;
+  if (bot.location.x < settings.boundaryMinX + margin) pushX = 1;
+  else if (bot.location.x > settings.boundaryMaxX - margin) pushX = -1;
+  if (bot.location.z < settings.boundaryMinZ + margin) pushZ = 1;
+  else if (bot.location.z > settings.boundaryMaxZ - margin) pushZ = -1;
+  if (pushX === 0 && pushZ === 0) return undefined;
+  return normalize2D({ x: pushX, y: 0, z: pushZ });
 }
 
-// ── Anti-Float: detect when the bot is stranded in mid-air (e.g. the
-// platform it was standing on got blown up) and force it down.
-// Without this, applyImpulse with y=0 every tick cancels the physics
-// engine's gravity and the bot hovers forever.
-function patchFindGroundBelow(dimension, location, maxDepth = 20) {
-  const x = Math.floor(location.x);
-  const z = Math.floor(location.z);
-  const startY = Math.floor(location.y);
-  for (let dy = 0; dy <= maxDepth; dy++) {
-    const checkY = startY - dy;
-    const candidate = { x: location.x, y: checkY, z: location.z };
-    // Need air at feet+head and solid below
-    const feetBlock = getBlock(dimension, candidate);
-    const headBlock = getBlock(dimension, addVector(candidate, { x: 0, y: 1, z: 0 }));
-    const belowBlock = getBlock(dimension, addVector(candidate, { x: 0, y: -1, z: 0 }));
-    if (isAirBlock(feetBlock) && isAirBlock(headBlock) && isSolidBlock(belowBlock)) {
-      return { x: x + 0.5, y: checkY, z: z + 0.5 };
+// ── Stuck escape (段階的) ──
+function moveTryEscapeTeleport(bot, config, target) {
+  if (config.escapeTeleport === false) return false;
+  const runtime = getRuntime(config.uid);
+  if (globalTick - Number(runtime.lastEscapeTeleportTick ?? -9999) < PATCH_ESCAPE_TELEPORT_COOLDOWN) return false;
+  const origin = bot.location;
+  for (let radius = 1; radius <= 5; radius++) {
+    for (let dy = 2; dy >= -3; dy--) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+          const x = Math.floor(origin.x) + dx, y = Math.floor(origin.y) + dy, z = Math.floor(origin.z) + dz;
+          if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary({ x: x + 0.5, y, z: z + 0.5 })) continue;
+          if (navIsStandableCell(bot.dimension, x, y, z) !== 1) continue;
+          try {
+            bot.teleport({ x: x + 0.5, y, z: z + 0.5 }, { dimension: bot.dimension, facingLocation: target?.location });
+            runtime.lastEscapeTeleportTick = globalTick;
+            runtime.stuckTicks = 0;
+            runtime.navPath = undefined;
+            return true;
+          } catch { return false; }
+        }
+      }
     }
   }
+  // 周囲が全滅 → オーナー付近へ退避
+  const owner = getPlayerByName(config.ownerName) ?? findClosestPlayer(bot.location, bot.dimension, 48);
+  if (!owner) return false;
+  const rescue = navFindStandableNear(bot.dimension, owner.location, 3, 4);
+  if (!rescue) return false;
+  try {
+    bot.teleport(rescue, { dimension: bot.dimension, facingLocation: target?.location });
+    runtime.lastEscapeTeleportTick = globalTick;
+    runtime.stuckTicks = 0;
+    runtime.navPath = undefined;
+    return true;
+  } catch { return false; }
+}
+
+// 迂回方向を選ぶ(左右のどちらかに一定時間コミットする)
+function moveComputeDetourDirection(bot, runtime, forwardDirection) {
+  if (globalTick <= Number(runtime.detourUntilTick ?? -9999) && runtime.detourDirection) {
+    return runtime.detourDirection;
+  }
+  const side = { x: -forwardDirection.z, y: 0, z: forwardDirection.x };
+  const candidates = [
+    { x: side.x, y: 0, z: side.z },
+    { x: -side.x, y: 0, z: -side.z },
+    normalize2D({ x: side.x + forwardDirection.x, y: 0, z: side.z + forwardDirection.z }),
+    normalize2D({ x: -side.x + forwardDirection.x, y: 0, z: -side.z + forwardDirection.z }),
+  ];
+  for (const candidate of candidates) {
+    const probe = addVector(bot.location, { x: candidate.x * 1.2, y: 0, z: candidate.z * 1.2 });
+    const groundY = navFindGroundY(bot.dimension, { ...probe, y: probe.y + 1.2 }, 4);
+    if (groundY === undefined) continue;
+    const resolved = { x: probe.x, y: groundY, z: probe.z };
+    if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(resolved)) continue;
+    if (!navCanOccupy(bot.dimension, resolved)) continue;
+    runtime.detourDirection = candidate;
+    runtime.detourUntilTick = globalTick + STUCK_DETOUR_HOLD_TICKS;
+    return candidate;
+  }
   return undefined;
+}
+
+/**
+ * スタック段階に応じた回復処理。
+ * @returns {{ handled: boolean, direction?: {x,y,z} }}
+ */
+function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirection, tactic) {
+  const runtime = getRuntime(config.uid);
+  if (stuckTicks < STUCK_STAGE_JIGGLE_TICKS) return { handled: false };
+
+  // 段階1: 埋没しているなら即掘る（何よりも優先）
+  if (moveIsBotEmbedded(bot)) {
+    if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) {
+      debugLog(bot, config, "movement", `§e[脱出] 埋没を検知して採掘 stuck=${stuckTicks}`);
+      return { handled: true };
+    }
+    // 掘れない → 上に押し出す
+    try { bot.applyImpulse({ x: forwardDirection.x * 0.1, y: 0.42, z: forwardDirection.z * 0.1 }); } catch {}
+    return { handled: true };
+  }
+
+  // 段階2: ジャンプで段差/隙間を越える
+  if (stuckTicks < STUCK_STAGE_DETOUR_TICKS) {
+    if (moveHasStepObstacle(bot, forwardDirection) || moveTryJump(bot, runtime, config, MOVE_SPRINT_JUMP_BONUS, forwardDirection)) {
+      return { handled: false }; // ジャンプしつつ前進継続
+    }
+    return { handled: false };
+  }
+
+  // 段階3: 左右へ迂回
+  if (stuckTicks < STUCK_STAGE_MINE_TICKS) {
+    const detour = moveComputeDetourDirection(bot, runtime, forwardDirection);
+    if (detour) {
+      runtime.navPath = undefined; // 経路も作り直す
+      debugLog(bot, config, "movement", `§e[脱出] 迂回中 stuck=${stuckTicks}`);
+      return { handled: false, direction: detour };
+    }
+  }
+
+  // 段階4: 掘って進む
+  if (stuckTicks < STUCK_STAGE_PILLAR_TICKS) {
+    if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) {
+      debugLog(bot, config, "movement", `§e[脱出] 進路を採掘 stuck=${stuckTicks}`);
+      return { handled: true };
+    }
+  }
+
+  // 段階5: 柱/橋で地形を作る
+  if (stuckTicks < STUCK_STAGE_TELEPORT_TICKS) {
+    if (tactic?.mode === TACTIC_CLIMB && tacticTryPillarUp(bot, config, target)) {
+      moveTryJump(bot, runtime, config);
+      return { handled: true };
+    }
+    if (tacticTryBridgeToward(bot, config, forwardDirection)) return { handled: true };
+    if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) return { handled: true };
+  }
+
+  // 段階6: 最後の手段としてTP
+  if (moveTryEscapeTeleport(bot, config, target)) {
+    debugLog(bot, config, "movement", `§c[脱出] 完全にスタックしたためTPで脱出 stuck=${stuckTicks}`, true);
+    return { handled: true };
+  }
+  return { handled: false };
+}
+
+// ── Anti-float / falling ──
+// applyImpulse({y:0}) を毎tick呼ぶと重力が打ち消されて空中に浮いたままになる。
+// y成分は「必要な時だけ」加えるのが原則。ここでは落下が止まっている時のみ補助する。
+function moveHandleAirborne(bot, runtime) {
+  const velocity = getBotVelocity(bot);
+  if (isBotOnGround(bot)) { runtime.airborneTicks = 0; return false; }
+  runtime.airborneTicks = Number(runtime.airborneTicks ?? 0) + 1;
+  // 落下しているなら物理に任せる
+  if (velocity.y < -0.08) return true;
+  // 上昇中(ジャンプ直後)も任せる
+  if (velocity.y > 0.05 && runtime.airborneTicks < 12) return true;
+  // 垂直速度がほぼ0で空中に留まっている = 浮遊バグ
+  if (runtime.airborneTicks >= 3) {
+    try { bot.applyImpulse({ x: 0, y: -0.28, z: 0 }); } catch {}
+  }
+  return true;
 }
 
 // ── Main Movement Handler ──
 export function handleMovement(bot, target, config) {
   const runtime = getRuntime(config.uid);
-  const isStuck = patchUpdateStuckState(bot, runtime);
-  const grounded = findNearestStandingLocation(bot.dimension, bot.location);
-  if (globalTick > (runtime.jumpDashAirborneUntilTick ?? -9999) && grounded && distanceSquared(grounded, bot.location) > 0.0001) {
-    try {
-      const snapped = patchSnapToBlockCenter(grounded);
-      let clampSnapped = snapped;
-      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(clampSnapped)) { const c = clampLocationToBotBoundary(clampSnapped); if (isSafeStandingLocation(bot.dimension, c) && canOccupyLocation(bot.dimension, c)) clampSnapped = c; }
-      if (isSafeStandingLocation(bot.dimension, clampSnapped) && canOccupyLocation(bot.dimension, clampSnapped))
-        bot.teleport(clampSnapped, { dimension: bot.dimension, facingLocation: addVector(target.location, { x: 0, y: 1.1, z: 0 }) });
-    } catch {}
+  const { inWater, onGround } = moveGetSurfaceState(bot);
+
+  // 周回方向の反転タイマー
+  if (globalTick >= Number(runtime.nextStrafeFlipTick ?? 0)) {
+    runtime.strafeDirection = Number(runtime.strafeDirection ?? 1) * -1;
+    // 人間らしく揺らぎのある間隔にする
+    runtime.nextStrafeFlipTick = globalTick + STRAFE_FLIP_INTERVAL + Math.floor(Math.random() * 10);
   }
-  // ── Anti-Float ──
-  // If the bot is airborne AND no ground within the normal snap range,
-  // search much further down (up to 20 blocks). If ground is found close,
-  // teleport there. If ground is far, apply downward impulse so the physics
-  // engine actually makes the bot fall (applyImpulse with y=0 cancels gravity).
-  if (!grounded && globalTick > (runtime.jumpDashAirborneUntilTick ?? -9999)) {
-    const deepGround = patchFindGroundBelow(bot.dimension, bot.location, 20);
-    if (deepGround) {
-      const dropDistance = bot.location.y - deepGround.y;
-      if (dropDistance <= 3) {
-        // Close enough to snap-teleport
-        try { bot.teleport(deepGround, { dimension: bot.dimension, facingLocation: addVector(target.location, { x: 0, y: 1.1, z: 0 }) }); } catch {}
-      } else {
-        // Far fall: apply downward impulse to let physics handle it
-        try { bot.applyImpulse({ x: 0, y: -0.35, z: 0 }); } catch {}
-      }
-    } else {
-      // No ground found within 20 blocks — still apply downward impulse
-      // in case the bot is above a void or very deep drop.
-      try { bot.applyImpulse({ x: 0, y: -0.35, z: 0 }); } catch {}
-    }
-  }
-  const toTarget = vectorTo(bot.location, target.location);
-  let planar = normalize2D(toTarget);
-  const currentDistance = distance(bot.location, target.location);
-  if (Math.abs(planar.x) < 0.0001 && Math.abs(planar.z) < 0.0001) {
-    const fallback = normalize2D(target.getViewDirection?.() ?? { x: 1, y: 0, z: 0 });
-    planar = Math.abs(fallback.x) < 0.0001 && Math.abs(fallback.z) < 0.0001 ? { x: 1, y: 0, z: 0 } : { x: -fallback.x, y: 0, z: -fallback.z };
-  }
-  try { bot.addEffect("speed", 6, { amplifier: 1, showParticles: false }); } catch {}
-  if (globalTick >= runtime.nextStrafeFlipTick) { runtime.strafeDirection *= -1; runtime.nextStrafeFlipTick = globalTick + STRAFE_FLIP_INTERVAL; }
-  let targetMaintainDistance = config.maintainDistance;
-  const currentHealth = patchGetCurrentHealthValue(bot);
-  const maxHealth = patchGetMaxHealthValue(bot);
-  const isFleeing = patchIsRecoveryActive(bot, runtime, config);
-  if (isFleeing) targetMaintainDistance = 12;
-  const distanceError = currentDistance - targetMaintainDistance;
-  const groundedNow = patchIsEntityOnGroundSafe(bot);
-  const tooClose = distanceError < -0.1 && !(bot.location.y - target.location.y >= 2.0);
-  const airborneTooClose = tooClose && !groundedNow;
-  const shouldStandbyForHeal = isFleeing && !tooClose;
-  const retreatDirection = { x: -planar.x, y: 0, z: -planar.z };
-  const retreatWalk = tooClose && groundedNow;
-  const inMeleeRange = currentDistance <= SWORD_RANGE;
-  const targetBelow = target.location.y < bot.location.y - 1.5;
-  const isCornered = (runtime.isCorneredTick === globalTick) && config.eatWhenCornered;
-  
-  const isStrafeNeeded = !isCornered && (runtime.stuckTicks > 0 || (config.strafeMove !== false && inMeleeRange && !retreatWalk && globalTick % 40 < 20));
-  const strafeScale = isStrafeNeeded && !targetBelow && !shouldStandbyForHeal ? 0.032 : 0;
-  const strafe = { x: -planar.z * runtime.strafeDirection, y: 0, z: planar.x * runtime.strafeDirection };
-  const impulse = { x: strafe.x * strafeScale, y: 0, z: strafe.z * strafeScale };
-  const retreatLimit = groundedNow ? -0.038 : 0;
-  const radialStrength = isCornered ? 0 : (airborneTooClose || shouldStandbyForHeal ? 0
-    : retreatWalk ? Math.max(-0.095, distanceError * 0.11)
-    : Math.max(retreatLimit, Math.min(0.18, distanceError * 0.16)));
+
+  const isRecovering = patchIsRecoveryActive(bot, runtime, config);
+  const tactic = evaluateCombatTactic(bot, target, config, { isRecovering });
+  runtime.currentTacticMode = tactic.mode;
+
+  const totalDistance = distance(bot.location, target.location);
   const targetEyeLocation = addVector(target.location, { x: 0, y: 1.1, z: 0 });
-  faceBotToward(bot, targetEyeLocation);
-  setBotLookAt(bot, targetEyeLocation);
-  impulse.x += planar.x * radialStrength;
-  impulse.z += planar.z * radialStrength;
-  const moveDirection = normalize2D(impulse);
-  const jumpDashTriggered = patchShouldJumpDash(bot, target, config, moveDirection);
-  if (jumpDashTriggered) {
-    impulse.y += PATCH_JUMP_DASH_VERTICAL_IMPULSE;
-    impulse.x += moveDirection.x * PATCH_JUMP_DASH_FORWARD_BONUS;
-    impulse.z += moveDirection.z * PATCH_JUMP_DASH_FORWARD_BONUS;
-    runtime.lastJumpDashTick = globalTick;
-    runtime.jumpDashAirborneUntilTick = globalTick + PATCH_JUMP_DASH_AIRBORNE_TICKS;
-    tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.dash_leap");
-  }
-  try { bot.applyImpulse(impulse); } catch {}
-  if (jumpDashTriggered) {
-    // If the dash teleport fails (no landing spot found, e.g. due to
-    // boundary filter rejecting all candidates), cancel the airborne flag
-    // immediately. Otherwise the bot hovers in mid-air for several ticks
-    // because handleMovement's opening snap-to-ground is skipped while
-    // jumpDashAirborneUntilTick is in the future.
-    if (!patchTryJumpDashTeleport(bot, target, config, moveDirection)) {
-      runtime.jumpDashAirborneUntilTick = globalTick;
-    }
-    return;
-  }
-  
-  // Embedded detection — mine immediately, no threshold needed (but NOT when fleeing for recovery)
-  const embedded = !isFleeing && patchIsBotEmbedded(bot);
-  if (embedded) {
-    debugLog(bot, config, "movement", `§e[Mining] EMBEDDED detected! Attempting mine immediately`, true);
-    const embeddedDir = retreatWalk ? retreatDirection : (Math.hypot(planar.x, planar.z) > 0.1 ? planar : { x: 1, y: 0, z: 0 });
-    if (patchTryMineBlock(bot, config, embeddedDir, embeddedDir, target)) {
-      debugLog(bot, config, "movement", `§a[Mining] Embedded mine started`, true);
-      return;
-    } else {
-      debugLog(bot, config, "movement", `§c[Mining] Embedded mine FAILED (no target block or mining disabled)`, true);
-    }
+
+  // ── 視線 ──
+  // 常にターゲットを見る。ただし瞬間的にスナップせず、人間らしく追従させる。
+  const inCombatRange = totalDistance <= SWORD_RANGE + 2.5;
+  const configuredTurnSpeed = Number(config.lookTurnSpeed ?? LOOK_TURN_SPEED_COMBAT);
+  const travelTurnSpeed = Math.max(6, configuredTurnSpeed * (LOOK_TURN_SPEED_TRAVEL / LOOK_TURN_SPEED_COMBAT));
+  const turnSpeed = config.humanize
+    ? (inCombatRange ? configuredTurnSpeed : travelTurnSpeed)
+    : (configuredTurnSpeed >= 180 ? undefined : configuredTurnSpeed);
+  const lookLocation = config.humanize ? patchApplyAimJitter(targetEyeLocation, config) : targetEyeLocation;
+  faceBotToward(bot, lookLocation, turnSpeed);
+
+  // ── 空中処理 ──
+  const airborne = moveHandleAirborne(bot, runtime);
+
+  // ── 目標地点の決定 ──
+  let goal = tactic.goal;
+  if (!goal) {
+    // 戦術が目標を出せなかった場合はターゲット周辺の立てる場所へ
+    goal = navFindStandableNear(bot.dimension, target.location, 3, 4);
   }
 
-  const forwardStep = (!airborneTooClose && !retreatWalk) ? patchFindMovementStep(bot.dimension, bot.location, moveDirection, isStuck) : undefined;
-  
-  if (!forwardStep && !airborneTooClose) {
-    runtime.forwardBlockedTicks = (runtime.forwardBlockedTicks ?? 0) + 1;
+  // ── 経路探索 ──
+  const needsPath = config.pathfinding !== false && goal && distance(bot.location, goal) > 1.6 &&
+    (tactic.mode !== TACTIC_ENGAGE || !navHasWalkableLine(bot.dimension, bot.location, goal, 1, 3));
+  if (needsPath && moveShouldRepath(runtime, goal, config.uid)) {
+    moveRequestPath(bot, runtime, goal, config);
+  }
+  if (!needsPath) runtime.navPath = undefined;
+
+  const waypoint = moveConsumeWaypoint(bot, runtime);
+  const steeringTargetLocation = waypoint ?? goal;
+
+  // ── 進行方向 ──
+  let forwardDirection = steeringTargetLocation
+    ? normalize2D(vectorTo(bot.location, steeringTargetLocation))
+    : normalize2D(vectorTo(bot.location, target.location));
+  if (Math.abs(forwardDirection.x) < 0.0001 && Math.abs(forwardDirection.z) < 0.0001) {
+    forwardDirection = normalize2D(vectorTo(bot.location, target.location));
+  }
+
+  // ── スタック判定と段階的脱出 ──
+  const stuckTicks = moveUpdateStuckState(bot, runtime, forwardDirection);
+  const escalation = moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirection, tactic);
+  if (escalation.handled) return;
+  if (escalation.direction) forwardDirection = escalation.direction;
+
+  // ── 速度ベクトルの構築 ──
+  const desiredDistance = Number(tactic.desiredDistance ?? config.maintainDistance ?? 3);
+  const distanceError = totalDistance - desiredDistance;
+  const baseSpeed = inWater ? MOVE_SPEED_WATER
+    : tactic.mode === TACTIC_KITE ? MOVE_SPEED_RETREAT
+    : tactic.sprint ? MOVE_SPEED_SPRINT
+    : MOVE_SPEED_WALK;
+
+  let desiredVelocity = { x: 0, z: 0 };
+
+  if (tactic.mode === TACTIC_ENGAGE && Math.abs(distanceError) <= TACTIC_ORBIT_DISTANCE_TOLERANCE) {
+    // 維持距離が取れている → 横移動(ストレイフ)主体
+    const toTarget = normalize2D(vectorTo(bot.location, target.location));
+    const strafeVector = { x: -toTarget.z * Number(runtime.strafeDirection ?? 1), z: toTarget.x * Number(runtime.strafeDirection ?? 1) };
+    const strafeSpeed = config.strafeMove === false ? 0 : MOVE_SPEED_STRAFE;
+    desiredVelocity.x = strafeVector.x * strafeSpeed;
+    desiredVelocity.z = strafeVector.z * strafeSpeed;
+    // 微小な距離補正を足す
+    desiredVelocity.x += toTarget.x * distanceError * 0.05;
+    desiredVelocity.z += toTarget.z * distanceError * 0.05;
+  } else if (tactic.mode === TACTIC_KITE) {
+    desiredVelocity.x = forwardDirection.x * baseSpeed;
+    desiredVelocity.z = forwardDirection.z * baseSpeed;
+  } else if (distanceError < -0.35 && tactic.mode !== TACTIC_CLIMB && tactic.mode !== TACTIC_DESCEND) {
+    // 近すぎる → 後退しつつ横に流れる（棒立ちにならない）
+    const away = normalize2D(vectorTo(target.location, bot.location));
+    const side = { x: -away.z * Number(runtime.strafeDirection ?? 1), z: away.x * Number(runtime.strafeDirection ?? 1) };
+    desiredVelocity.x = away.x * MOVE_SPEED_WALK * 0.85 + side.x * MOVE_SPEED_STRAFE * 0.6;
+    desiredVelocity.z = away.z * MOVE_SPEED_WALK * 0.85 + side.z * MOVE_SPEED_STRAFE * 0.6;
   } else {
-    runtime.forwardBlockedTicks = 0;
-  }
-  
-  // Debug: log stuck state every 10 ticks
-  if (globalTick % 10 === 0 && (runtime.stuckTicks > 0 || runtime.forwardBlockedTicks > 0)) {
-    const mdLen = Math.hypot(moveDirection.x, moveDirection.z).toFixed(3);
-    const plLen = Math.hypot(planar.x, planar.z).toFixed(3);
-    debugLog(bot, config, "movement", `§e[Stuck] stuckTicks=${runtime.stuckTicks} blockedTicks=${runtime.forwardBlockedTicks} isStuck=${isStuck} embedded=${embedded} enableMining=${config.enableMining} threshold=${config.mineStuckTicksThreshold ?? 10} mdLen=${mdLen} plLen=${plLen} retreatWalk=${retreatWalk}`, true);
-  }
-
-  const mineThreshold = Math.max(1, config.mineStuckTicksThreshold ?? 10);
-  if (!isFleeing && ((isStuck && runtime.stuckTicks > mineThreshold) || 
-      (runtime.forwardBlockedTicks > mineThreshold))) {
-    debugLog(bot, config, "movement", `§e[Mining] Threshold reached! stuckTicks=${runtime.stuckTicks} blockedTicks=${runtime.forwardBlockedTicks} threshold=${mineThreshold}`, true);
-    const mineDir = retreatWalk ? retreatDirection : moveDirection;
-    const fallbackDir = Math.hypot(planar.x, planar.z) > 0.1 ? planar : { x: 1, y: 0, z: 0 };
-    if (patchTryMineBlock(bot, config, mineDir, fallbackDir, target)) {
-      debugLog(bot, config, "movement", `§a[Mining] Mine started!`, true);
-      return; // Stop moving while mining
-    } else {
-      debugLog(bot, config, "movement", `§c[Mining] Mine FAILED after threshold`, true);
+    desiredVelocity.x = forwardDirection.x * baseSpeed;
+    desiredVelocity.z = forwardDirection.z * baseSpeed;
+    // 直線的すぎない移動にするため、接近中もわずかに横成分を混ぜる
+    if (config.strafeMove !== false && tactic.mode === TACTIC_CLOSE_GAP && totalDistance < 8) {
+      const side = { x: -forwardDirection.z, z: forwardDirection.x };
+      const weave = Math.sin(globalTick * 0.18) * 0.35 * Number(runtime.strafeDirection ?? 1);
+      desiredVelocity.x += side.x * baseSpeed * weave;
+      desiredVelocity.z += side.z * baseSpeed * weave;
     }
   }
-  
-  // Candidate selection priority:
-  // 1. If airborne, try to snap to a standing location below us first.
-  // 2. If target is below us by more than 1.5 blocks, prioritize descending
-  //    toward the target over walking forward at the same height. The old
-  //    code only called patchFindDescendStep as a fallback AFTER forwardStep
-  //    failed, which meant the bot would never jump off a ledge to chase
-  //    a target that was below and slightly to the side.
-  const targetBelowSignificantly = target.location.y < bot.location.y - 1.5;
-  const descendStep = targetBelowSignificantly
-    ? patchFindDescendStep(bot.dimension, bot.location, target.location, planar)
-    : undefined;
 
-  const candidate = (!groundedNow ? findNearestStandingLocation(bot.dimension, bot.location, [0, -1, -2, -3, -4, -5]) : undefined) ??
-    descendStep ??
-    (retreatWalk ? patchFindMovementStep(bot.dimension, bot.location, retreatDirection, isStuck) : undefined) ??
-    (retreatWalk ? patchFindMovementStep(bot.dimension, bot.location, strafe, isStuck) : undefined) ??
-    (retreatWalk ? patchFindMovementStep(bot.dimension, bot.location, { x: -strafe.x, y: 0, z: -strafe.z }, isStuck) : undefined) ??
-    forwardStep ??
-    (isStuck && !airborneTooClose ? patchTryBuildStep(bot, config, retreatWalk ? retreatDirection : moveDirection) : undefined);
-  if (candidate) {
-    try {
-      let tptarget = candidate;
-      if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(tptarget)) { const c = clampLocationToBotBoundary(tptarget); if (isSafeStandingLocation(bot.dimension, c) && canOccupyLocation(bot.dimension, c)) tptarget = c; }
-      bot.teleport(tptarget, {
-        dimension: bot.dimension,
-        facingLocation: retreatWalk ? addVector(tptarget, { x: retreatDirection.x * 2, y: 1.1, z: retreatDirection.z * 2 }) : addVector(target.location, { x: 0, y: 1.1, z: 0 }),
-      });
-      tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.walk");
-    } catch {}
-  } else if (!isFleeing && !shouldStandbyForHeal &&
-             config.strafeMove !== false &&
-             (Math.abs(distanceError) > 0.8 || Math.abs(target.location.y - bot.location.y) > 2.0) &&
-             (runtime.stuckTicks ?? 0) > PATCH_STUCK_ESCAPE_TICKS &&
-             globalTick - Number(runtime.lastEscapeTeleportTick ?? -9999) >= PATCH_ESCAPE_TELEPORT_COOLDOWN) {
-    // 長時間動けない(クレーター/埋没など) → 安全な足場へ強制脱出
-    if (patchTryEscapeStuck(bot, config, target)) {
-      runtime.lastEscapeTeleportTick = globalTick;
-      runtime.stuckTicks = 0;
-      debugLog(bot, config, "movement", `§e[脱出] スタック状態から強制脱出`, true);
+  // ── 境界からの回避（TPではなく操舵で戻す） ──
+  const boundaryPush = moveComputeBoundaryAvoidance(bot);
+  if (boundaryPush) {
+    desiredVelocity.x += boundaryPush.x * MOVE_SPEED_WALK * 1.2;
+    desiredVelocity.z += boundaryPush.z * MOVE_SPEED_WALK * 1.2;
+  }
+
+  // ── 崖の安全確認 ──
+  // 回復中や落下ダメージが致命的な時は飛び降りない。
+  const movementDirection = normalize2D({ x: desiredVelocity.x, y: 0, z: desiredVelocity.z });
+  const wantsToDive = tactic.mode === TACTIC_DESCEND;
+  if (!wantsToDive && onGround && Math.hypot(desiredVelocity.x, desiredVelocity.z) > 0.02) {
+    const allowedDrop = isRecovering ? 2.5 : Math.max(3, patchGetCurrentHealthValue(bot) * 0.45);
+    if (tacticIsDangerousLedge(bot, movementDirection, allowedDrop)) {
+      // 崖 → 横にスライドして回避
+      const side = { x: -movementDirection.z, z: movementDirection.x };
+      const slideDirection = tacticIsDangerousLedge(bot, { x: side.x, y: 0, z: side.z }, allowedDrop)
+        ? { x: -side.x, z: -side.z } : side;
+      desiredVelocity.x = slideDirection.x * MOVE_SPEED_WALK;
+      desiredVelocity.z = slideDirection.z * MOVE_SPEED_WALK;
+      runtime.navPath = undefined;
+      // 橋を架けられるなら架ける
+      if (tactic.mode === TACTIC_CLOSE_GAP) tacticTryBridgeToward(bot, config, movementDirection);
     }
   }
-  // Safety net: if bot ended up outside boundary after all movement, pull back
+
+  // ── ジャンプ判定 ──
+  if (tactic.allowJump !== false && onGround && !inWater) {
+    const needsWaypointJump = waypoint && moveNeedsJumpForWaypoint(bot, waypoint);
+    const needsStepJump = moveHasStepObstacle(bot, movementDirection);
+    if (needsWaypointJump || needsStepJump) {
+      moveTryJump(bot, runtime, config, MOVE_SPRINT_JUMP_BONUS, movementDirection);
+    } else if (tactic.mode === TACTIC_CLIMB && waypoint && waypoint.y - bot.location.y > 0.2) {
+      moveTryJump(bot, runtime, config, MOVE_SPRINT_JUMP_BONUS * 0.6, movementDirection);
+    } else if (config.jumpDash !== false && tactic.sprint && totalDistance > desiredDistance + 1.5 &&
+               globalTick - Number(runtime.lastJumpTick ?? -9999) > MOVE_JUMP_COOLDOWN_TICKS * 2 &&
+               patchRandomChance(18)) {
+      // 人間らしいジャンプダッシュ(常時ではなく確率的に)
+      moveTryJump(bot, runtime, config, MOVE_SPRINT_JUMP_BONUS, movementDirection);
+    }
+  }
+
+  // ── 登れない壁 → 柱を立てて登る ──
+  // 既にターゲットの真下にいる場合はスタック判定を待たずに即座に積む。
+  const horizontalToTarget = Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z);
+  const isDirectlyBelowTarget = horizontalToTarget <= 1.8;
+  if (tactic.mode === TACTIC_CLIMB && onGround &&
+      target.location.y - bot.location.y >= 2.2 &&
+      (!runtime.navPath || !runtime.navPath.length) &&
+      (isDirectlyBelowTarget || stuckTicks >= STUCK_STAGE_JIGGLE_TICKS)) {
+    if (tacticTryPillarUp(bot, config, target)) {
+      moveTryJump(bot, runtime, config);
+      return;
+    }
+  } else if (tactic.mode !== TACTIC_CLIMB) {
+    runtime.pillarHeightGain = 0;
+  }
+
+  // ── 操舵の適用 ──
+  const maxAccel = onGround ? MOVE_MAX_ACCEL_GROUND : MOVE_MAX_ACCEL_AIR;
+  applyHorizontalSteering(bot, desiredVelocity, { maxAccel });
+
+  // 歩行アニメーション
+  if (onGround && Math.hypot(desiredVelocity.x, desiredVelocity.z) > 0.04 && globalTick % 6 === 0) {
+    tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.walk");
+  }
+
+  // ── 最終安全網 ──
+  // 境界を大きく外れた・地面が無い等の異常時のみ teleport を使う。
   if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(bot.location)) {
     const safe = findSafeBoundaryReturnLocation(bot);
-    try { bot.teleport(safe, { dimension: bot.dimension }); } catch {}
+    try { bot.teleport(safe, { dimension: bot.dimension, keepVelocity: false }); } catch {}
+    runtime.navPath = undefined;
+    return;
+  }
+  // 20ブロック以上落下し続けている(地形が消えた等)場合の救出
+  if (!onGround && Number(runtime.airborneTicks ?? 0) > 80) {
+    const ground = navFindGroundY(bot.dimension, bot.location, 40);
+    if (ground === undefined) {
+      moveTryEscapeTeleport(bot, config, target);
+      runtime.airborneTicks = 0;
+    }
   }
 }

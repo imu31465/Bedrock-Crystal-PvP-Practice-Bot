@@ -606,16 +606,82 @@ export function describeTrackedBotMeta(meta) {
 }
 
 // ── Bot Direction / Look ──
-export function faceBotToward(bot, targetLocation) {
+// 重要: 以前は teleport(facingLocation) で向きを変えていたが、teleport は
+// 速度をリセットするため毎tick呼ぶと物理移動が完全に死んで「がたがた」した。
+// setRotation なら速度を保ったまま向きだけ変えられる。
+export function getYawPitchToward(fromLocation, targetLocation, eyeHeight = 1.62) {
+  const dx = targetLocation.x - fromLocation.x;
+  const dy = targetLocation.y - (fromLocation.y + eyeHeight);
+  const dz = targetLocation.z - fromLocation.z;
+  const horizontal = Math.hypot(dx, dz);
+  const yaw = (Math.atan2(-dx, dz) * 180) / Math.PI;
+  const pitch = (-Math.atan2(dy, horizontal < 0.0001 ? 0.0001 : horizontal) * 180) / Math.PI;
+  return { yaw, pitch: Math.max(-89, Math.min(89, pitch)) };
+}
+
+function normalizeYawDelta(delta) {
+  let value = delta;
+  while (value > 180) value -= 360;
+  while (value < -180) value += 360;
+  return value;
+}
+
+// 目標方向へ向く。maxTurnDegrees を指定すると人間らしくエイムが追従する。
+export function faceBotToward(bot, targetLocation, maxTurnDegrees) {
   try {
-    bot.teleport(bot.location, {
-      dimension: bot.dimension,
-      facingLocation: targetLocation,
-    });
+    const desired = getYawPitchToward(bot.location, targetLocation);
+    if (typeof bot.setRotation !== "function") {
+      // 旧APIフォールバック: keepVelocity を付けて速度を保つ
+      try { bot.teleport(bot.location, { dimension: bot.dimension, facingLocation: targetLocation, keepVelocity: true }); } catch {}
+      return;
+    }
+    if (!maxTurnDegrees || maxTurnDegrees >= 180) { bot.setRotation(desired); return; }
+    let currentYaw = desired.yaw, currentPitch = desired.pitch;
+    try {
+      const rotation = bot.getRotation?.();
+      if (rotation) { currentYaw = Number(rotation.y ?? desired.yaw); currentPitch = Number(rotation.x ?? desired.pitch); }
+    } catch {}
+    const yawDelta = normalizeYawDelta(desired.yaw - currentYaw);
+    const pitchDelta = desired.pitch - currentPitch;
+    const yawStep = Math.max(-maxTurnDegrees, Math.min(maxTurnDegrees, yawDelta));
+    const pitchStep = Math.max(-maxTurnDegrees, Math.min(maxTurnDegrees, pitchDelta));
+    bot.setRotation({ x: currentPitch + pitchStep, y: currentYaw + yawStep });
   } catch {}
 }
-export function setBotLookAt(bot, targetLocation) {
-  faceBotToward(bot, targetLocation);
+export function setBotLookAt(bot, targetLocation, maxTurnDegrees) {
+  faceBotToward(bot, targetLocation, maxTurnDegrees);
+}
+
+// ── Velocity Helpers ──
+export function getBotVelocity(bot) {
+  try {
+    const velocity = bot.getVelocity?.();
+    if (velocity) return { x: Number(velocity.x ?? 0), y: Number(velocity.y ?? 0), z: Number(velocity.z ?? 0) };
+  } catch {}
+  return { x: 0, y: 0, z: 0 };
+}
+
+// 目標水平速度になるよう「差分だけ」impulseを与える。
+// これによりターゲット速度を上限に滑らかに移動し、加速の暴走や振動が起きない。
+export function applyHorizontalSteering(bot, desiredVelocity, options = {}) {
+  const maxAccel = Number(options.maxAccel ?? 0.16);
+  const verticalImpulse = Number(options.verticalImpulse ?? 0);
+  const current = getBotVelocity(bot);
+  let dx = desiredVelocity.x - current.x;
+  let dz = desiredVelocity.z - current.z;
+  const magnitude = Math.hypot(dx, dz);
+  if (magnitude > maxAccel) {
+    const scale = maxAccel / magnitude;
+    dx *= scale; dz *= scale;
+  }
+  if (Math.abs(dx) < 0.0015 && Math.abs(dz) < 0.0015 && Math.abs(verticalImpulse) < 0.0015) return false;
+  try { bot.applyImpulse({ x: dx, y: verticalImpulse, z: dz }); return true; } catch { return false; }
+}
+
+export function isBotOnGround(bot) {
+  try { if (typeof bot?.isOnGround === "boolean") return bot.isOnGround; } catch {}
+  const below = getBlock(bot.dimension, addVector(bot.location, { x: 0, y: -0.12, z: 0 }));
+  return isSolidBlock(below);
 }
 export function tryPlayAnimation(bot, animationId) {
   try { bot.playAnimation?.(animationId); } catch {}

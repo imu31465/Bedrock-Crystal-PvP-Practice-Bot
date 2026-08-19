@@ -43,6 +43,16 @@ function createRuntimeState() {
     foodAbsorptionUntilTick: -9999, foodRegenUntilTick: -9999,
     foodResistanceUntilTick: -9999, foodFireResistanceUntilTick: -9999,
     forceRecoveryFoodUntilTick: -9999,
+    // ── Movement v2 runtime ──
+    navPath: undefined, navLastPathTick: -9999, navGoalKey: "", navSlotOffset: undefined,
+    navLastPathFailed: false, navPathComplete: false,
+    airborneTicks: 0, lastJumpTick: -9999,
+    detourDirection: undefined, detourUntilTick: -9999,
+    pillarHeightGain: 0, pillarJumpPending: false, bridgeBlockCount: 0,
+    lastBlockPlaceTick: -9999, miningUntilTick: -9999,
+    highGroundGoal: undefined, highGroundUntilTick: -9999,
+    lastHighGroundSearchTick: -9999, currentTacticMode: "",
+    lastEscapeTeleportTick: -9999,
   };
 }
 
@@ -87,6 +97,8 @@ export function createDefaultConfig(uid) {
     inventoryMode: "auto_refill", customItemCounts: {},
     difficultyPreset: "normal",
     enableMining: true, mineStuckTicksThreshold: 10, eatWhenCornered: true,
+    pathfinding: true, blockPlacing: true, highGroundTactic: true,
+    escapeTeleport: true, lookTurnSpeed: 42,
     debug: { enabled: false, movement: false, scan: false, combat: false, health: false, totem: false, loadout: false, inventory: false },
   };
 }
@@ -131,6 +143,11 @@ export function normalizeConfig(config) {
     targetBots: config?.targetBots ?? defaults.targetBots,
     enableMining: config?.enableMining ?? defaults.enableMining,
     mineStuckTicksThreshold: Math.max(0, Math.min(120, Number(config?.mineStuckTicksThreshold ?? defaults.mineStuckTicksThreshold))),
+    pathfinding: config?.pathfinding ?? defaults.pathfinding,
+    blockPlacing: config?.blockPlacing ?? defaults.blockPlacing,
+    highGroundTactic: config?.highGroundTactic ?? defaults.highGroundTactic,
+    escapeTeleport: config?.escapeTeleport ?? defaults.escapeTeleport,
+    lookTurnSpeed: Math.max(6, Math.min(180, Number(config?.lookTurnSpeed ?? defaults.lookTurnSpeed))),
     debug: {
       enabled: config?.debug?.enabled ?? defaults.debug.enabled,
       movement: config?.debug?.movement ?? defaults.debug.movement,
@@ -349,6 +366,11 @@ export function writeConfigTags(bot, config) {
     enableMining: config.enableMining ? "1" : "0",
     mineStuckTicksThreshold: `${config.mineStuckTicksThreshold ?? 40}`,
     eatWhenCornered: config.eatWhenCornered ? "1" : "0",
+    pathfinding: (config.pathfinding ?? true) ? "1" : "0",
+    blockPlacing: (config.blockPlacing ?? true) ? "1" : "0",
+    highGroundTactic: (config.highGroundTactic ?? true) ? "1" : "0",
+    escapeTeleport: (config.escapeTeleport ?? true) ? "1" : "0",
+    lookTurnSpeed: `${config.lookTurnSpeed ?? 42}`,
     debugEnabled: config.debug?.enabled ? "1" : "0",
     debugMovement: config.debug?.movement ? "1" : "0",
     debugScan: config.debug?.scan ? "1" : "0",
@@ -420,6 +442,11 @@ export function materializeConfig(bot, owner) {
     enableMining: tagged.enableMining === undefined ? (saved?.enableMining ?? true) : tagged.enableMining === "1",
     mineStuckTicksThreshold: Number(tagged.mineStuckTicksThreshold ?? saved?.mineStuckTicksThreshold ?? 40),
     eatWhenCornered: tagged.eatWhenCornered === undefined ? (saved?.eatWhenCornered ?? true) : tagged.eatWhenCornered === "1",
+    pathfinding: tagged.pathfinding === undefined ? (saved?.pathfinding ?? true) : tagged.pathfinding === "1",
+    blockPlacing: tagged.blockPlacing === undefined ? (saved?.blockPlacing ?? true) : tagged.blockPlacing === "1",
+    highGroundTactic: tagged.highGroundTactic === undefined ? (saved?.highGroundTactic ?? true) : tagged.highGroundTactic === "1",
+    escapeTeleport: tagged.escapeTeleport === undefined ? (saved?.escapeTeleport ?? true) : tagged.escapeTeleport === "1",
+    lookTurnSpeed: Number(tagged.lookTurnSpeed ?? saved?.lookTurnSpeed ?? 42),
     debug: {
       enabled: tagged.debugEnabled === undefined ? saved?.debug?.enabled : tagged.debugEnabled === "1",
       movement: tagged.debugMovement === undefined ? saved?.debug?.movement : tagged.debugMovement === "1",

@@ -36,7 +36,7 @@ export const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 export const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 export const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 export const BOT_READY_TAG = "pvpbot.ready";
-export const ADDON_VERSION = "1.4.00";
+export const ADDON_VERSION = "1.5.00";
 
 export const OBSIDIAN_ID = "minecraft:obsidian";
 export const END_CRYSTAL_ID = "minecraft:end_crystal";
@@ -99,6 +99,51 @@ export const PATCH_JUMP_DASH_FORWARD_BONUS = 0.18;
 export const PATCH_JUMP_DASH_MIN_DIRECTION = 0.025;
 export const PATCH_STUCK_ESCAPE_TICKS = 60;
 export const PATCH_ESCAPE_TELEPORT_COOLDOWN = 40;
+
+// ── Movement v2 (physics based smooth movement) ──
+// 目標水平速度 (blocks/tick)。プレイヤーのスプリント ≈ 0.28
+export const MOVE_SPEED_WALK = 0.132;
+export const MOVE_SPEED_SPRINT = 0.235;
+export const MOVE_SPEED_STRAFE = 0.155;
+export const MOVE_SPEED_RETREAT = 0.19;
+export const MOVE_SPEED_WATER = 0.09;
+// 1tickで加えられる速度変化の上限。大きすぎると振動、小さすぎると鈍い
+export const MOVE_MAX_ACCEL_GROUND = 0.085;
+export const MOVE_MAX_ACCEL_AIR = 0.028;
+export const MOVE_JUMP_IMPULSE = 0.44;
+export const MOVE_JUMP_COOLDOWN_TICKS = 8;
+export const MOVE_SPRINT_JUMP_BONUS = 0.055;
+// 経路探索
+export const NAV_REPATH_INTERVAL_TICKS = 10;
+export const NAV_REPATH_FAIL_INTERVAL_TICKS = 24;
+export const NAV_MAX_EXPANSIONS = 340;
+export const NAV_MAX_PATH_DISTANCE = 48;
+export const NAV_WAYPOINT_REACH_RADIUS = 0.62;
+export const NAV_WAYPOINT_REACH_RADIUS_Y = 1.35;
+export const NAV_PATH_MAX_AGE_TICKS = 60;
+// スタック検知・脱出のエスカレーション段階
+export const STUCK_DETECT_MOVE_EPSILON = 0.055;
+export const STUCK_STAGE_JIGGLE_TICKS = 8;
+export const STUCK_STAGE_DETOUR_TICKS = 16;
+export const STUCK_STAGE_MINE_TICKS = 28;
+export const STUCK_STAGE_PILLAR_TICKS = 44;
+export const STUCK_STAGE_TELEPORT_TICKS = 80;
+export const STUCK_DETOUR_HOLD_TICKS = 14;
+// 人間らしい視線追従（度/tick）。大きいほど機械的に瞬間で向く
+export const LOOK_TURN_SPEED_COMBAT = 42;
+export const LOOK_TURN_SPEED_TRAVEL = 26;
+// 位置戦術
+export const TACTIC_HIGH_GROUND_BONUS_Y = 2.0;
+export const TACTIC_TARGET_ABOVE_THRESHOLD = 2.2;
+export const TACTIC_TARGET_BELOW_THRESHOLD = 2.0;
+export const TACTIC_PILLAR_MAX_HEIGHT = 8;
+export const TACTIC_BRIDGE_MAX_LENGTH = 6;
+export const TACTIC_PLACE_COOLDOWN_TICKS = 5;
+export const TACTIC_ORBIT_DISTANCE_TOLERANCE = 0.55;
+export const TACTIC_LEDGE_SAFETY_MARGIN = 3.5;
+export const MOVE_FILLER_BLOCK_IDS = [
+  "minecraft:cobblestone", "minecraft:stone", "minecraft:dirt", OBSIDIAN_ID,
+];
 export const PATCH_ANCHOR_NATIVE_BREAK_CHECK_RADIUS = 4.75;
 export const PATCH_ANCHOR_NATIVE_BREAK_MIN_CHANGED_BLOCKS = 1;
 export const PATCH_ANCHOR_FORCE_FALLBACK = false;
@@ -286,12 +331,16 @@ export const PATCH_DIFFICULTY_PRESETS = {
     swordCooldown: 18, crystalCooldown: 20, crystalDetonateDelay: 5,
     anchorCooldown: 22, anchorDetonateDelay: 4,
     targetMobs: true, targetBots: true, autoTotem: true,
+    pathfinding: true, blockPlacing: false, highGroundTactic: false,
+    escapeTeleport: true, lookTurnSpeed: 18, humanize: true,
   },
   normal: {
     maintainDistance: 3, pearlDistance: 10, pearlCooldown: 40,
     swordCooldown: 15, crystalCooldown: 15, crystalDetonateDelay: 3,
     anchorCooldown: 15, anchorDetonateDelay: 3,
     targetMobs: true, targetBots: true, autoTotem: true,
+    pathfinding: true, blockPlacing: true, highGroundTactic: true,
+    escapeTeleport: true, lookTurnSpeed: 32, humanize: true,
   },
   hard: {
     maintainDistance: 2, pearlDistance: 8, pearlCooldown: 20,
@@ -299,6 +348,8 @@ export const PATCH_DIFFICULTY_PRESETS = {
     anchorCooldown: 0, anchorDetonateDelay: 0, totemRefillDelay: 0,
     reactionDelay: 0, jumpDash: true, pearlRecover: false,
     targetMobs: true, targetBots: true, autoTotem: true,
+    pathfinding: true, blockPlacing: true, highGroundTactic: true,
+    escapeTeleport: true, lookTurnSpeed: 70, humanize: false,
   },
 };
 
