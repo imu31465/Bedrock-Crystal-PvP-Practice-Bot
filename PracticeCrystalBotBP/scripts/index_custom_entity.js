@@ -36,7 +36,7 @@ const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 const BOT_READY_TAG = "pvpbot.ready";
-const ADDON_VERSION = "1.2.0";
+const ADDON_VERSION = "1.2.1";
 const OBSIDIAN_ID = "minecraft:obsidian";
 const END_CRYSTAL_ID = "minecraft:end_crystal";
 const END_CRYSTAL_ENTITY_ID = "minecraft:ender_crystal";
@@ -8850,10 +8850,11 @@ try {
 const ELEV_ADVANTAGE_EPSILON = 0.35;        // 同高度と見なす許容差
 const ELEV_IDEAL_LOWER_DELTA = 1.0;         // 相手より1ブロック低いのが基本の理想
 const ELEV_MAX_USEFUL_LOWER_DELTA = 3.0;    // これ以上低いとクリスタルが届かない
-const ELEV_DESCENT_COOLDOWN_TICKS = 12;     // 下降行動の連打防止
-const ELEV_DESCENT_SCAN_RADIUS = 5;         // 下降先の水平探索半径
+const ELEV_DESCENT_COOLDOWN_TICKS = 4;      // 開いている下層を逃さず再評価する
+const ELEV_DESCENT_SCAN_RADIUS = 6;         // 下降先の水平探索半径
 const ELEV_DESCENT_MAX_DROP = 12;           // 探索する最大落下量
-const ELEV_ANCHOR_SELFBLAST_MIN_HEALTH = 14; // アンカー自爆で降りるのに必要な体力
+const ELEV_TACTICAL_MAX_DROP = 8;           // 射程外でも危険な同高度から逃れる最大深度
+const ELEV_ANCHOR_SELFBLAST_MIN_HEALTH = 12; // アンカー自爆で降りるのに必要な体力
 const ELEV_SELFBLAST_COOLDOWN_TICKS = 60;
 
 // 立っている地面(足元ブロックの上面)のYを求める。空中なら落下予測先。
@@ -8874,7 +8875,10 @@ function elevResolveGroundY(dimension, location, maxDrop = ELEV_DESCENT_MAX_DROP
 // state: "lower"(有利) / "level"(不利) / "higher"(最も不利)
 function elevEvaluateAdvantage(bot, target) {
   const botGroundY = elevResolveGroundY(bot.dimension, bot.location);
-  const targetGroundY = elevResolveGroundY(target.dimension ?? bot.dimension, target.location);
+  const targetGroundY = elevResolveGroundY(
+    target.dimension ?? bot.dimension,
+    target.location,
+  );
   const rawDelta = bot.location.y - target.location.y; // +なら自分が上
   const groundDelta = botGroundY - targetGroundY;
   let state;
@@ -8894,10 +8898,10 @@ function elevEvaluateAdvantage(bot, target) {
     botGroundY,
     targetGroundY,
     tooLow,
-    // クリスタルを撃てる理想的な位置にいるか
-    isFavorable: state === "lower" && !tooLow,
-    // 能動的に下がるべきか (同高度 or 上、かつ届く範囲を保てる)
-    needsDescent: (state === "level" || state === "higher") && !tooLow,
+    // 同高度は有利扱いしない。爆心より明確に下にいる時だけ攻めの高さとする。
+    isFavorable: rawDelta < -ELEV_ADVANTAGE_EPSILON && !tooLow,
+    // 同高度/上なら、下層が射程外でもまず危険な高さから離脱する。
+    needsDescent: state === "level" || state === "higher",
     // どれだけ下がりたいか
     desiredDrop: Math.max(
       0,
@@ -8915,17 +8919,34 @@ function elevFindLowerStandingSpot(bot, target, advantage) {
   const dimension = bot.dimension;
   const botOrigin = floorLocation(bot.location);
   const targetGroundY = advantage.targetGroundY;
-  // 狙いたい足元Y: 相手の地面より1〜3下
+  // まず相手より1〜3下を狙う。そこが無ければ現在地から最大8ブロック下も
+  // 候補にし、同高度で爆破を受け続けるより下層への離脱を優先する。
   const desiredYs = [];
   for (let drop = 1; drop <= ELEV_MAX_USEFUL_LOWER_DELTA; drop += 1) {
     desiredYs.push(targetGroundY - drop);
   }
+  for (let drop = 1; drop <= ELEV_TACTICAL_MAX_DROP; drop += 1) {
+    desiredYs.push(Math.floor(bot.location.y) - drop);
+  }
+  const uniqueDesiredYs = [...new Set(desiredYs)];
   let best;
   let bestScore = Number.POSITIVE_INFINITY;
-  for (let dx = -ELEV_DESCENT_SCAN_RADIUS; dx <= ELEV_DESCENT_SCAN_RADIUS; dx += 1) {
-    for (let dz = -ELEV_DESCENT_SCAN_RADIUS; dz <= ELEV_DESCENT_SCAN_RADIUS; dz += 1) {
-      for (const y of desiredYs) {
-        const candidate = { x: botOrigin.x + dx + 0.5, y, z: botOrigin.z + dz + 0.5 };
+  for (
+    let dx = -ELEV_DESCENT_SCAN_RADIUS;
+    dx <= ELEV_DESCENT_SCAN_RADIUS;
+    dx += 1
+  ) {
+    for (
+      let dz = -ELEV_DESCENT_SCAN_RADIUS;
+      dz <= ELEV_DESCENT_SCAN_RADIUS;
+      dz += 1
+    ) {
+      for (const y of uniqueDesiredYs) {
+        const candidate = {
+          x: botOrigin.x + dx + 0.5,
+          y,
+          z: botOrigin.z + dz + 0.5,
+        };
         if (candidate.y >= bot.location.y - 0.2) {
           continue; // 実際に下がれていないならスキップ
         }
@@ -8944,21 +8965,81 @@ function elevFindLowerStandingSpot(bot, target, advantage) {
         // 実際に手が届くかを3D距離で検証する。
         // 低く降りるほど縦距離が伸びるので、水平距離の許容量は自動的に縮む。
         const reach3d = Math.hypot(horizontal, dropFromTarget);
-        if (horizontal < 1.2 || reach3d > MAX_INTERACT_DISTANCE - 0.3) {
+        if (horizontal < 0.65) {
           continue;
         }
-        // 理想は1ブロック下
+        const outsideImmediateReach = reach3d > MAX_INTERACT_DISTANCE - 0.1;
+        // 理想は1ブロック下。射程外の深い退避先も最後の手段として残す。
         const verticalScore = Math.abs(dropFromTarget - ELEV_IDEAL_LOWER_DELTA) * 2.0;
         const horizontalScore = Math.abs(horizontal - 2.2) * 1.1;
         const travelScore = Math.hypot(
           candidate.x - bot.location.x,
           candidate.z - bot.location.z,
-        ) * 0.35;
-        const score = verticalScore + horizontalScore + travelScore;
+        ) * 0.25;
+        const score =
+          verticalScore +
+          horizontalScore +
+          travelScore +
+          (outsideImmediateReach ? 8 : 0);
         if (score < bestScore) {
           best = candidate;
           bestScore = score;
         }
+      }
+    }
+  }
+  return best;
+}
+
+// 真下または隣の開口部から落ちられる着地点を探す。
+// 従来は「既に立てる1〜3段下」だけを見ていたため、穴の入口が空気だと見逃していた。
+function elevFindOpenDropLanding(bot, target, advantage) {
+  const origin = floorLocation(bot.location);
+  const planar = normalize2D(vectorTo(bot.location, target.location));
+  const offsets = [
+    { x: 0, z: 0 },
+    { x: Math.round(planar.x), z: Math.round(planar.z) },
+    { x: -Math.round(planar.z), z: Math.round(planar.x) },
+    { x: Math.round(planar.z), z: -Math.round(planar.x) },
+    { x: -Math.round(planar.x), z: -Math.round(planar.z) },
+    { x: 1, z: 0 },
+    { x: -1, z: 0 },
+    { x: 0, z: 1 },
+    { x: 0, z: -1 },
+  ];
+  let best;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const offset of offsets) {
+    const x = origin.x + offset.x;
+    const z = origin.z + offset.z;
+    if (offset.x !== 0 || offset.z !== 0) {
+      const entryFeet = getBlock(bot.dimension, { x, y: origin.y, z });
+      const entryHead = getBlock(bot.dimension, { x, y: origin.y + 1, z });
+      if (!isAirBlock(entryFeet) || !isAirBlock(entryHead)) continue;
+    }
+    for (let drop = 1; drop <= ELEV_TACTICAL_MAX_DROP; drop += 1) {
+      const candidate = { x: x + 0.5, y: origin.y - drop, z: z + 0.5 };
+      if (!isLocationInsideBotBoundary(candidate)) continue;
+      const shaftFeet = getBlock(bot.dimension, {
+        x,
+        y: origin.y - drop + 1,
+        z,
+      });
+      if (!isAirBlock(shaftFeet)) break;
+      if (!isSafeStandingLocation(bot.dimension, candidate)) continue;
+      const dropFromTarget = advantage.targetGroundY - candidate.y;
+      if (dropFromTarget < ELEV_ADVANTAGE_EPSILON) continue;
+      const horizontal = Math.hypot(
+        candidate.x - target.location.x,
+        candidate.z - target.location.z,
+      );
+      const score =
+        Math.abs(dropFromTarget - ELEV_IDEAL_LOWER_DELTA) * 2 +
+        horizontal * 0.2 +
+        drop * 0.08;
+      if (score < bestScore) {
+        best = candidate;
+        bestScore = score;
       }
     }
   }
@@ -9018,7 +9099,9 @@ function elevFindWalkableDescendStep(bot, target, advantage) {
 
 // --- 下降手段 1: 歩いて段差を降りる ---
 function elevTryWalkDescend(bot, target, config, advantage) {
-  const step = elevFindWalkableDescendStep(bot, target, advantage);
+  const step =
+    elevFindOpenDropLanding(bot, target, advantage) ??
+    elevFindWalkableDescendStep(bot, target, advantage);
   if (!step) {
     return false;
   }
@@ -9046,7 +9129,7 @@ function elevTryPearlDescend(bot, target, config, advantage) {
     return false;
   }
   const runtime = getRuntime(config.uid);
-  const cooldown = Math.max(20, Number(config.pearlCooldown ?? 40) * 0.5);
+  const cooldown = Math.max(8, Number(config.pearlCooldown ?? 40) * 0.35);
   if (globalTick - Number(runtime.lastPearlTick ?? -9999) < cooldown) {
     return false;
   }
@@ -9276,14 +9359,18 @@ function elevMaintainLowGround(bot, target, config, advantage) {
   if (!advantage.needsDescent) {
     return false;
   }
+  // 実行中の下降や自然落下を通常移動で打ち消さない。
+  if (
+    runtime.pendingAnchor?.elevationDescent ||
+    `${runtime.pendingPearlToken ?? ""}`.includes(":elev:") ||
+    !patchIsEntityOnGroundSafe(bot)
+  ) {
+    return true;
+  }
   if (
     globalTick - Number(runtime.lastElevDescentTick ?? -9999) <
     ELEV_DESCENT_COOLDOWN_TICKS
   ) {
-    return false;
-  }
-  // 空中にいる時は着地を待つ(落下中は勝手にテレポートしない)
-  if (!patchIsEntityOnGroundSafe(bot)) {
     return false;
   }
   runtime.lastElevDescentTick = globalTick;
@@ -9319,10 +9406,8 @@ patchGetCombatBaseYCandidates = function (target, bot) {
   // 許容: 土台Yは groundY - 1 以下 (= クリスタルは groundY 以下の高さに出現)
   const primary = groundY - 1;
   const candidates = [primary, primary - 1, primary - 2];
-  // 相手が空中(ジャンプ中/落下中)の場合は現在の足元も考慮
-  if (targetFeet.y - groundY >= 1) {
-    candidates.unshift(targetFeet.y - 1);
-  }
+  // ジャンプ中の現在Yを土台基準にすると地面より上へ置いてしまうため、
+  // 常に実際の着地面を基準にする。
   const result = [
     ...new Set(
       candidates
@@ -9362,6 +9447,14 @@ handleMovement = function (bot, target, config) {
 // ============================================================
 const elevBasePatchTryBuildStep = patchTryBuildStep;
 patchTryBuildStep = function (bot, config, moveDirection) {
+  // 高さ不利の時は元関数を呼ぶ前に止める。元関数は呼び出し中に
+  // ブロックを設置するため、戻り値だけ破棄しても登り防止にならない。
+  try {
+    const target = findNearestTarget(bot);
+    if (target && elevEvaluateAdvantage(bot, target).needsDescent) {
+      return undefined;
+    }
+  } catch {}
   const result = elevBasePatchTryBuildStep(bot, config, moveDirection);
   if (!result) {
     return result;
@@ -9403,31 +9496,42 @@ patchShouldJumpDash = function (bot, target, config, moveDirection) {
 // ============================================================
 const elevBaseChooseBestExplosiveAction = chooseBestExplosiveAction;
 chooseBestExplosiveAction = function (bot, target, config) {
+  const runtime = getRuntime(config.uid);
+  if (
+    runtime.pendingAnchor?.elevationDescent ||
+    `${runtime.pendingPearlToken ?? ""}`.includes(":elev:")
+  ) {
+    return undefined;
+  }
+  const crystalReady =
+    config.crystalCombo &&
+    !runtime.pendingCrystal &&
+    globalTick - Number(runtime.lastCrystalTick ?? -9999) >=
+      Number(config.crystalCooldown ?? 0);
+  const anchorReady =
+    config.anchorCombo &&
+    !runtime.pendingAnchor &&
+    globalTick - Number(runtime.lastAnchorTick ?? -9999) >=
+      Number(config.anchorCooldown ?? 0);
+  if (!crystalReady && !anchorReady) {
+    return undefined;
+  }
   let advantage;
   try {
-    advantage = getRuntime(config.uid).elevAdvantage ?? elevEvaluateAdvantage(bot, target);
+    advantage = runtime.elevAdvantage ?? elevEvaluateAdvantage(bot, target);
   } catch {}
-  const action = elevBaseChooseBestExplosiveAction(bot, target, config);
+  // CD中の種類を候補走査から外す。以前は毎tick両方を全走査したうえで
+  // CD中の行動を選ぶことがあり、利用可能なクリスタルまで遅れていた。
+  const action = elevBaseChooseBestExplosiveAction(bot, target, {
+    ...config,
+    crystalCombo: crystalReady,
+    anchorCombo: anchorReady,
+  });
   if (!action || !advantage) {
     return action;
   }
-  // 高さ不利のまま撃つと相手より自分のほうが痛いので、
-  // 明確に有利な候補(相手ダメージが自分の2倍以上)以外は見送って降下を優先する。
-  if (advantage.state === "higher") {
-    const c = action.candidate;
-    const worthIt =
-      config.ignoreSelfDamage ||
-      (c && c.targetDamage >= c.selfDamage * 2 && c.targetDamage >= 4.0);
-    if (!worthIt) {
-      debugLog(
-        bot,
-        config,
-        "combat",
-        `§6高さ不利のため爆破を保留 (dY=${advantage.rawDelta.toFixed(2)})`,
-      );
-      return undefined;
-    }
-  }
+  // 高さ調整に失敗したtickでも、有効な爆破まで止めない。
+  // 以前の「高さ不利なら爆破保留」が体感速度を大きく落としていた。
   return action;
 };
 
@@ -9469,12 +9573,12 @@ function elevRefineCandidates(bot, target, config, candidates, comboType) {
     // 自分が爆心より高い位置にいると自分の胴体に爆発が直撃する形になる
     const selfAboveBlast = botGroundY - blastY;
     const elevationBonus =
-      // 理想: 自分の足元が爆心と同じか少し下 (= 相手より低い)
-      selfAboveBlast <= 0
-        ? 3.0
-        : selfAboveBlast <= 1
-          ? 0.5
-          : -2.5 * selfAboveBlast;
+      // 同じ高さも危険。自分の足元が爆心より明確に下の時だけ加点する。
+      selfAboveBlast <= -ELEV_ADVANTAGE_EPSILON
+        ? 4.0
+        : selfAboveBlast <= ELEV_ADVANTAGE_EPSILON
+          ? -1.5
+          : -3.0 * selfAboveBlast;
     // 爆心が相手の足元と同じ高さに近いほど高評価
     const blastAlignBonus = 2.0 - Math.abs(blastY - targetGroundY) * 1.5;
     refined.push({
