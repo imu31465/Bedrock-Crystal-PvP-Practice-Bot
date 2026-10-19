@@ -372,13 +372,57 @@ export function handlePearlMove(bot, target, config) {
   runtime.pendingPearlToken = token;
   if (!equipMainhandItem(bot, ENDER_PEARL_ID, config) || !consumeManagedItem(bot, config, ENDER_PEARL_ID, 1)) { runtime.pendingPearlToken = ""; return; }
   faceBotToward(bot, landingSpot);
-  try { bot.dimension.spawnEntity(ENDER_PEARL_ID, addVector(bot.location, { x: 0, y: 1.45, z: 0 })); } catch {}
-  system.runTimeout(() => {
-    if (runtime.pendingPearlToken !== token) return;
-    try { bot.teleport(landingSpot, { dimension: bot.dimension, facingLocation: target.location }); } catch {}
-    const held = getEquippableComponent(bot)?.getEquipment(EquipmentSlot.Mainhand);
-    if (held?.typeId === ENDER_PEARL_ID) selectBestSword(bot);
-  }, PEARL_VISUAL_DELAY);
+  // 実投げ: エンパ実体を射出し、実際の弾道で飛行させる(着地点到達/静止でテレポート)
+  let pearl;
+  let launchMethod = "";
+  try {
+    const eye = addVector(bot.location, { x: 0, y: 1.45, z: 0 });
+    const aimPoint = addVector(landingSpot, { x: 0, y: 0.6, z: 0 });
+    const toLand = vectorTo(eye, aimPoint);
+    const dist = Math.hypot(toLand.x, toLand.y, toLand.z) || 1;
+    const dir = { x: toLand.x / dist, y: toLand.y / dist + 0.1, z: toLand.z / dist };
+    const speed = Math.max(0.8, Math.min(2.4, dist * 0.1));
+    pearl = bot.dimension.spawnEntity(ENDER_PEARL_ID, eye);
+    try { pearl.shoot({ direction: dir, speed }); launchMethod = "shoot"; }
+    catch {
+      try { pearl.applyImpulse({ x: dir.x * speed, y: dir.y * speed, z: dir.z * speed }); launchMethod = "impulse"; } catch {}
+    }
+    debugLog(bot, config, "movement", `§e[Pearl] thrown ${launchMethod || "stationary"} dist=${dist.toFixed(1)} speed=${speed.toFixed(2)}`, true);
+  } catch { pearl = undefined; }
+  trackThrownPearl(bot, pearl, landingSpot, target, runtime, token);
+}
+
+// 射出したエンパの着地追跡: 弾道が落ち着いた/目標地点付近に達したらテレポート
+function trackThrownPearl(bot, pearl, landingSpot, target, runtime, token) {
+  let ticks = 0;
+  const step = () => {
+    if (runtime.pendingPearlToken !== token) { try { pearl?.remove(); } catch {} return; }
+    try {
+      ticks++;
+      const alive = pearl?.isValid;
+      const vel = alive ? pearl.velocity : undefined;
+      const speed2 = vel ? Math.hypot(vel.x, vel.y, vel.z) : 0;
+      const nearSpot = alive
+        && Math.abs(pearl.location.x - landingSpot.x) + Math.abs(pearl.location.z - landingSpot.z) < 1.2
+        && pearl.location.y - landingSpot.y < 1.5;
+      if (ticks < 6) { system.runTimeout(step, 1); return; }
+      if (!alive || ticks >= 40 || speed2 < 0.05 || nearSpot) {
+        try { pearl?.remove(); } catch {}
+        if (runtime.pendingPearlToken === token) {
+          try { bot.teleport(landingSpot, { dimension: bot.dimension, facingLocation: target.location }); } catch {}
+          runtime.pendingPearlToken = "";
+          const held = getEquippableComponent(bot)?.getEquipment(EquipmentSlot.Mainhand);
+          if (held?.typeId === ENDER_PEARL_ID) selectBestSword(bot);
+        }
+        return;
+      }
+      system.runTimeout(step, 1);
+    } catch {
+      try { pearl?.remove(); } catch {}
+      runtime.pendingPearlToken = "";
+    }
+  };
+  system.runTimeout(step, 1);
 }
 
 // ══════════════════════════════════════════════════════════════

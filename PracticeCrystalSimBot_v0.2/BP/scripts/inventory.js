@@ -788,6 +788,22 @@ export function syncBotLoadout(bot, config, force = false) {
   }, 1);
 }
 
+// ── Axe (盾破解り用) ──
+const AXE_TIERS = [
+  "minecraft:netherite_axe", "minecraft:diamond_axe", "minecraft:iron_axe",
+  "minecraft:golden_axe", "minecraft:stone_axe", "minecraft:wooden_axe",
+];
+
+export function selectBestAxe(bot) {
+  const inventory = bot.getComponent(EntityComponentTypes.Inventory)?.container;
+  if (!inventory) return undefined;
+  for (let i = 0; i < inventory.size; i++) {
+    const item = inventory.getItem(i);
+    if (item && AXE_TIERS.includes(item.typeId)) return item.typeId;
+  }
+  return undefined;
+}
+
 // ── Seed / Init ──
 export function seedBotLoadout(bot) {
   const inventory = bot.getComponent(EntityComponentTypes.Inventory)?.container;
@@ -801,6 +817,7 @@ export function seedBotLoadout(bot) {
     new ItemStack(ENDER_PEARL_ID, 16), new ItemStack(TOTEM_ID, 8),
     new ItemStack(PATCH_ENCHANTED_GOLDEN_APPLE_ID, 4), new ItemStack(PATCH_GOLDEN_APPLE_ID, 8),
     new ItemStack("minecraft:shield", 1), new ItemStack("minecraft:crossbow", 1),
+    new ItemStack("minecraft:netherite_axe", 1),
   ];
   for (const item of starterItems) patchPlaceItemInContainer(inventory, item);
   if (equippable) {

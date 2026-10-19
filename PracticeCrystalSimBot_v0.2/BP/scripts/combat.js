@@ -24,7 +24,7 @@ import { getRuntime, normalizeGlobalSettings } from "./config.js";
 import {
   selectBestSword, equipMainhandItem, consumeManagedItem,
   patchCalculateNetDamage, patchCalculateExpectedHealthDamage,
-  patchGetSwordCombatStatsFromItem,
+  patchGetSwordCombatStatsFromItem, selectBestAxe,
   ensureAutoTotem,
 } from "./inventory.js";
 import {
@@ -677,8 +677,11 @@ function targetHasSlowFalling(target) {
 }
 
 // Human-discernible shield state: sneaking + holding shield in main/off hand
+const shieldDisableUntil = new Map(); // key: targetId(String) -> untilTick (axe break effect)
+
 function targetIsShielded(target) {
   try {
+    if (shieldDisableUntil.get(String(target?.id)) > globalTick) return false;
     if (!target?.isSneaking) return false;
     const equippable = target.getComponent?.("minecraft:equippable");
     const mainhand = equippable?.getEquipment?.(EquipmentSlot.Mainhand);
@@ -686,6 +689,41 @@ function targetIsShielded(target) {
     if (mainhand?.typeId === "minecraft:shield" || offhand?.typeId === "minecraft:shield") return true;
   } catch {}
   return false;
+}
+
+// ── Axe Shield Break (招時は斧で盾を破壊する) ──
+const AXE_BREAK_COOLDOWN_TICKS = 25; // 人間可: 斧への持ち替えサイクル 1.25秒
+const SHIELD_DISABLE_DURATION_TICKS = 100; // バニラ準拠 5秒
+
+export function handleAxeShieldBreak(bot, target, config) {
+  if (isSpawnProtected(config.uid)) return false;
+  const runtime = getRuntime(config.uid);
+  if (runtime.shieldGuardState?.active) return false;
+  if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingRangedDraw) return false;
+  try {
+    if (shieldDisableUntil.get(String(target?.id)) > globalTick) return false;
+    if (!targetIsShielded(target)) return false;
+  } catch { return false; }
+  if (distance(bot.location, target.location) > MAX_INTERACT_DISTANCE) return false;
+  if (!patchHasCombatLineOfSight(bot, target)) return false;
+  if (globalTick - Number(runtime.lastAxeBreakTick ?? -9999) < AXE_BREAK_COOLDOWN_TICKS) return false;
+  const axeId = selectBestAxe(bot);
+  if (!axeId) return false;
+  runtime.lastAxeBreakTick = globalTick;
+  if (!equipMainhandItem(bot, axeId, config)) {
+    runtime.lastAxeBreakTick = globalTick - AXE_BREAK_COOLDOWN_TICKS + 5;
+    return false;
+  }
+  faceBotToward(bot, addVector(target.location, { x: 0, y: 1.2, z: 0 }));
+  tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.swing");
+  const axeDamage = patchCalculateNetDamage(target, 7, "entityAttack"); // 鉄斧相当の強さ
+  patchApplyDamageWithFallback(target, axeDamage, "entityAttack", bot);
+  const knock = normalize2D(vectorTo(bot.location, target.location));
+  try { target.applyImpulse({ x: knock.x * 0.22, y: 0.04, z: knock.z * 0.22 }); } catch {}
+  shieldDisableUntil.set(String(target.id), globalTick + SHIELD_DISABLE_DURATION_TICKS);
+  debugLog(bot, config, "combat", `\u00a76[Axe] 盾破解り ${axeId.replace("minecraft:", "")} dmg=${axeDamage.toFixed(1)} disable=5s`, true);
+  system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 4);
+  return true;
 }
 
 function trackChargedArrow(bot, arrow, target, config) {

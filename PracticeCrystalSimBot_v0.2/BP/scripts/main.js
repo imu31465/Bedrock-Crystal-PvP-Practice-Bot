@@ -38,7 +38,7 @@ import {
 } from "./inventory.js";
 import {
   handleSwordCombo, handleCrystalCombo, handleAnchorCombo,
-  chooseBestExplosiveAction, handleSimThreatDefense, handleSimCrossbowAttack, handleSimShieldGuard,
+  chooseBestExplosiveAction, handleSimThreatDefense, handleSimCrossbowAttack, handleSimShieldGuard, handleAxeShieldBreak,
 } from "./combat.js";
 import {
   handleMovement, handlePearlMove, handleGoldenAppleBuff,
@@ -187,6 +187,8 @@ function tickBots() {
       // 武器bash may also be executed during explosive turns (simultaneous attack — suppress the weapon attack of the dice roll lineage)
       handleSwordCombo(bot, target, config);
     } else if (!guardActive) {
+      // 相手が盾を構えていたら斧で破解(5秒無効化 → クロスボウも再開)
+      handleAxeShieldBreak(bot, target, config);
       handleSwordCombo(bot, target, config);
       void handleSimCrossbowAttack(bot, target, config);
     }
