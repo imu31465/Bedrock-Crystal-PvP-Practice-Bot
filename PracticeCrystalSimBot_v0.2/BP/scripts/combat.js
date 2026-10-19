@@ -153,7 +153,7 @@ export function scanCrystalCandidates(bot, target, config) {
       
       let shieldBlock = undefined;
       if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) {
-        shieldBlock = findShieldBlock(bot, crystalLocation);
+        shieldBlock = config.blastMitigation ? findShieldBlock(bot, crystalLocation) : undefined;
         if (shieldBlock && !patchCanPlaceCombatBlock(bot, shieldBlock)) shieldBlock = undefined;
         if (!shieldBlock) continue;
         const shieldedSelfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
@@ -210,7 +210,7 @@ export function scanAnchorCandidates(bot, target, config) {
       
       let shieldBlock = undefined;
       if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) {
-        shieldBlock = findShieldBlock(bot, explosionLocation);
+        shieldBlock = config.blastMitigation ? findShieldBlock(bot, explosionLocation) : undefined;
         if (shieldBlock && !patchCanPlaceCombatBlock(bot, shieldBlock)) shieldBlock = undefined;
         if (!shieldBlock) continue;
         const shieldedSelfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "blockExplosion");
@@ -241,9 +241,19 @@ export function scanAnchorCandidates(bot, target, config) {
 }
 
 export function chooseBestExplosiveAction(bot, target, config) {
-  if (patchShouldDelayAction(config, "explosive")) return undefined;
-  if (patchRandomChance(config.suboptimalRate)) return undefined;
+  // Slow Falling Prey Priority: skip hesitation decisions and proceed to execution directly
+  const preyPriority = targetHasSlowFalling(target);
+  if (!preyPriority) {
+    if (patchShouldDelayAction(config, "explosive")) return undefined;
+    if (patchRandomChance(config.suboptimalRate)) return undefined;
+  }
   const runtime = getRuntime(config.uid);
+  try {
+    if (preyPriority && globalTick - Number(runtime.lastPreyPriorityLogTick ?? -9999) >= 30) {
+      runtime.lastPreyPriorityLogTick = globalTick;
+      appendPersistentDebugLog("combat", `${config.displayName}: prey priority engaged (target slow_falling)`);
+    }
+  } catch {}
   const anchorReady = config.anchorCombo && bot.dimension.id !== "minecraft:nether" && globalTick - runtime.lastAnchorTick >= config.anchorCooldown && !runtime.pendingAnchor;
   const crystalReady = config.crystalCombo && globalTick - runtime.lastCrystalTick >= config.crystalCooldown && !runtime.pendingCrystal;
   let bestAnchor, bestCrystal;
@@ -267,6 +277,7 @@ export function chooseBestExplosiveAction(bot, target, config) {
 // ── Sword Combo ──
 export function handleSwordCombo(bot, target, config) {
   const runtime = getRuntime(config.uid);
+  if (runtime.shieldGuardState?.active) return;
   if (isSpawnProtected(config.uid)) return;
   const currentDistance = distance(bot.location, target.location);
   if (!config.swordCombo || currentDistance > SWORD_RANGE || currentDistance > MAX_INTERACT_DISTANCE) return;
@@ -295,6 +306,7 @@ function shouldUseAnchorCombo(bot, target, config) {
 
 export function handleAnchorCombo(bot, target, config, selectedCandidate) {
   const runtime = getRuntime(config.uid);
+  if (runtime.shieldGuardState?.active) return false;
   if (isSpawnProtected(config.uid)) return false;
   if (!shouldUseAnchorCombo(bot, target, config)) return false;
   if (globalTick - runtime.lastAnchorTick < config.anchorCooldown || runtime.pendingAnchor) return false;
@@ -368,6 +380,7 @@ export function handleAnchorCombo(bot, target, config, selectedCandidate) {
 // ── Crystal Combo ──
 export function handleCrystalCombo(bot, target, config, selectedCandidate) {
   const runtime = getRuntime(config.uid);
+  if (runtime.shieldGuardState?.active) return false;
   if (isSpawnProtected(config.uid)) return false;
   if (!config.crystalCombo) return false;
   if (globalTick - runtime.lastCrystalTick < config.crystalCooldown || runtime.pendingCrystal) return false;
@@ -546,10 +559,11 @@ async function placeEmergencyProtectBlock(bot, threatLocation, config, reason) {
 export async function handleSimThreatDefense(bot, target, config) {
   const runtime = getRuntime(config.uid);
   if (isSpawnProtected(config.uid)) return;
+  if (runtime.shieldGuardState?.active) return;
   const projectile = findInboundProjectile(bot);
   if (projectile && globalTick - Number(runtime.lastProjectProtectTick ?? -9999) >= 12) {
     runtime.lastProjectProtectTick = globalTick;
-    await placeEmergencyProtectBlock(bot, projectile.location, config, "projectile");
+    if (config.blastMitigation) await placeEmergencyProtectBlock(bot, projectile.location, config, "projectile");
     const fleeDir = normalize2D(vectorTo(projectile.location, bot.location));
     try { bot.applyImpulse({ x: fleeDir.x * 0.3, y: 0.04, z: fleeDir.z * 0.3 }); } catch {}
   }
@@ -571,7 +585,7 @@ export async function handleSimThreatDefense(bot, target, config) {
     } catch {}
     if (hostile && hostile.d < 6.0 && globalTick - Number(runtime.lastThreatBlockTick ?? -9999) >= 16) {
       runtime.lastThreatBlockTick = globalTick;
-      if (await placeEmergencyProtectBlock(bot, hostile.location, config, "crystal")) {
+      if (config.blastMitigation && await placeEmergencyProtectBlock(bot, hostile.location, config, "crystal")) {
         const fleeDir = normalize2D(vectorTo(hostile.location, bot.location));
         try { bot.applyImpulse({ x: fleeDir.x * 0.28, y: 0.05, z: fleeDir.z * 0.28 }); } catch {}
       }
@@ -579,16 +593,19 @@ export async function handleSimThreatDefense(bot, target, config) {
   }
 }
 
-export function handleSimRangedAttack(bot, target, config) {
-  if (!config.rangedCombo) return false;
+export function handleSimCrossbowAttack(bot, target, config) {
+  if (!config.crossbowCombo) return false;
   if (isSpawnProtected(config.uid)) return false;
   const runtime = getRuntime(config.uid);
   if (runtime.pendingCrystal || runtime.pendingAnchor) return false;
   if (runtime.pendingRangedDraw) return false;
-  if (globalTick - Number(runtime.lastRangedTick ?? -9999) < Math.max(15, Number(config.rangedCooldown ?? 30))) return false;
+  if (runtime.shieldGuardState?.active) return false;
+  if (globalTick - Number(runtime.lastRangedTick ?? -9999) < CROSSBOW_COOLDOWN_TICKS) return false;
   const d = distance(bot.location, target.location);
   if (d < 8 || d > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE * 3) return false;
   if (!patchHasCombatLineOfSight(bot, target)) return false;
+  if (targetHasSlowFalling(target)) { debugLog(bot, config, "ranged", "[Ranged] target already slowfalling", false); return false; }
+  if (targetIsShielded(target)) { debugLog(bot, config, "ranged", "[Ranged] target shield up", false); return false; }
   runtime.lastRangedTick = globalTick;
   runtime.pendingRangedDraw = true;
   const weaponId = "minecraft:crossbow";
@@ -609,31 +626,32 @@ export function handleSimRangedAttack(bot, target, config) {
       const aimFresh = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.5, z: 0 }), config);
       faceBotToward(bot, aimFresh);
       let method = "";
+      let firedArrow = null;
       try {
-        bot.useItem?.(new ItemStack(weaponId, 1));
-        method = "useItem";
-      } catch { method = ""; }
-      if (!method) {
+        const eye = addVector(bot.location, { x: 0, y: 1.55, z: 0 });
+        const drop = curD * curD * 0.0045;
+        const aimPoint = addVector(aimFresh, { x: 0, y: drop, z: 0 });
+        const dir = normalizeVector3(vectorTo(eye, aimPoint));
+        firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        let shot = false;
+        try { firedArrow.shoot?.({ direction: dir, speed: 3 }); shot = true; } catch {}
+        if (!shot) {
+          try { firedArrow.applyImpulse({ x: dir.x * 3, y: dir.y * 3, z: dir.z * 3 }); shot = true; } catch {}
+        }
+        if (!shot) { try { firedArrow.remove(); } catch {} firedArrow = null; }
+      } catch { firedArrow = null; }
+      if (firedArrow) {
+        method = "chargedShot";
+      } else {
         try {
-          const eye = addVector(bot.location, { x: 0, y: 1.55, z: 0 });
-          const drop = curD * curD * 0.0045;
-          const aimPoint = addVector(aimFresh, { x: 0, y: drop, z: 0 });
-          const dir = normalizeVector3(vectorTo(eye, aimPoint));
-          const arrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
-          let shot = false;
-          try { arrow.shoot?.({ direction: dir, speed: 3 }); shot = true; } catch {}
-          if (!shot) {
-            try { arrow.applyImpulse({ x: dir.x * 3, y: dir.y * 3, z: dir.z * 3 }); shot = true; } catch {}
-          }
-          if (shot) {
-            method = "chargedShot";
-          } else {
-            try { arrow.remove(); } catch {}
-          }
-        } catch {}
+          bot.useItem?.(new ItemStack(weaponId, 1));
+          method = "useItem(untracked)";
+        } catch { method = ""; }
       }
       if (method) {
         debugLog(bot, config, "ranged", `\u00a7d[Ranged] ${method} fired dist=${curD.toFixed(1)}`, true);
+        if (firedArrow) trackChargedArrow(bot, firedArrow, target, config);
+        else debugLog(bot, config, "ranged", "[Ranged] useItem fallback: native arrow not tracked (no synthetic slowfall)", false);
         system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
       } else {
         selectBestSword(bot);
@@ -643,4 +661,113 @@ export function handleSimRangedAttack(bot, target, config) {
     }
   }, drawTicks);
   return true;
+}
+
+// ── Crossbow constants / arrow tracking ──
+const CROSSBOW_COOLDOWN_TICKS = 30;
+const SLOWFALL_DURATION_TICKS = 600; // 30s
+const CHARGED_ARROW_TRACK_MAX_TICKS = 80;
+const pendingSlowfallArrows = new Map(); // key: arrow.id -> { arrow, target, bot, config, ticks }
+
+function targetHasSlowFalling(target) {
+  try {
+    if (target?.getEffect?.("slow_falling")) return true;
+  } catch {}
+  return false;
+}
+
+// Human-discernible shield state: sneaking + holding shield in main/off hand
+function targetIsShielded(target) {
+  try {
+    if (!target?.isSneaking) return false;
+    const equippable = target.getComponent?.("minecraft:equippable");
+    const mainhand = equippable?.getEquipment?.(EquipmentSlot.Mainhand);
+    const offhand = equippable?.getEquipment?.(EquipmentSlot.Offhand);
+    if (mainhand?.typeId === "minecraft:shield" || offhand?.typeId === "minecraft:shield") return true;
+  } catch {}
+  return false;
+}
+
+function trackChargedArrow(bot, arrow, target, config) {
+  const entry = { arrow, target, bot, config, ticks: 0 };
+  pendingSlowfallArrows.set(String(arrow.id), entry);
+  const step = () => {
+    try {
+      if (!entry.arrow?.isValid) { pendingSlowfallArrows.delete(String(arrow.id)); return; }
+      if (entry.ticks > CHARGED_ARROW_TRACK_MAX_TICKS || !entry.target?.isValid) {
+        try { entry.arrow.remove(); } catch {}
+        pendingSlowfallArrows.delete(String(arrow.id));
+        return;
+      }
+      entry.ticks++;
+      const hit = distance(entry.arrow.location, entry.target.location);
+      if (hit < 1.0) {
+        let applied = false;
+        try { entry.target.addEffect?.("slow_falling", SLOWFALL_DURATION_TICKS, { amplifier: 0, showParticles: true }); applied = true; } catch {}
+        debugLog(entry.bot, entry.config, "ranged", `\u00a7d[Ranged] slowfall ${applied ? "applied" : "addEffect failed"} dist=${hit.toFixed(2)}`, true);
+        try { entry.arrow.remove(); } catch {}
+        pendingSlowfallArrows.delete(String(arrow.id));
+        return;
+      }
+      system.runTimeout(step, 1);
+    } catch {
+      pendingSlowfallArrows.delete(String(arrow.id));
+    }
+  };
+  system.runTimeout(step, 1);
+}
+
+// ── Shield Guard (defensive stance against enemy crystal) ──
+const SHIELD_GUARD_MAX_HOLD_TICKS = 40;
+const SHIELD_GUARD_RE_RAISE_COOLDOWN_TICKS = 20;
+
+function releaseShieldGuard(bot, config, runtime, reason) {
+  const state = runtime.shieldGuardState;
+  if (!state?.active) return;
+  state.active = false;
+  runtime.shieldGuardLowerTick = globalTick;
+  try { selectBestSword(bot); } catch {}
+  debugLog(bot, config, "guard", `\u00a7e[Shield] lower(${reason}) held=${globalTick - state.since}t`, true);
+}
+
+export function handleSimShieldGuard(bot, target, config) {
+  if (!config.shieldGuard) return;
+  if (isSpawnProtected(config.uid)) return;
+  const runtime = getRuntime(config.uid);
+  if (runtime.pendingCrystal || runtime.pendingAnchor) {
+    releaseShieldGuard(bot, config, runtime, "own combo");
+    return;
+  }
+  const state = runtime.shieldGuardState ?? (runtime.shieldGuardState = { active: false, since: 0, lastRaiseTick: 0 });
+  if (state.active) {
+    if (globalTick - state.since >= SHIELD_GUARD_MAX_HOLD_TICKS) { releaseShieldGuard(bot, config, runtime, "timeout"); return; }
+    if (globalTick - Number(state.lastRaiseTick ?? state.since) >= 10) {
+      state.lastRaiseTick = globalTick;
+      try { bot.useItem?.(new ItemStack("minecraft:shield", 1)); } catch {}
+    }
+    return;
+  }
+  if (globalTick - Number(runtime.shieldGuardLowerTick ?? -9999) < SHIELD_GUARD_RE_RAISE_COOLDOWN_TICKS) return;
+  if (runtime.pendingRangedDraw) return;
+  let hostileCrystal;
+  try {
+    hostileCrystal = bot.dimension.getEntities({ location: bot.location, maxDistance: 6.5 })
+      .find((entity) => {
+        try {
+          if (entity.typeId !== END_CRYSTAL_ENTITY_ID) return false;
+          const pending = runtime.pendingCrystal;
+          if (pending?.base && Math.floor(entity.location.x) === Math.floor(pending.base.x) && Math.floor(entity.location.z) === Math.floor(pending.base.z)) return false;
+          return true;
+        } catch { return false; }
+      });
+  } catch {}
+  if (!hostileCrystal) return;
+  if (!equipMainhandItem(bot, "minecraft:shield", config)) return;
+  faceBotToward(bot, addVector(hostileCrystal.location, { x: 0, y: 0.5, z: 0 }));
+  let raised = false;
+  try { bot.useItem?.(new ItemStack("minecraft:shield", 1)); raised = true; } catch {}
+  state.active = true;
+  state.since = globalTick;
+  state.lastRaiseTick = globalTick;
+  debugLog(bot, config, "guard", `\u00a7e[Shield] raise useItem=${raised} dist=${distance(bot.location, hostileCrystal.location).toFixed(1)}`, true);
 }

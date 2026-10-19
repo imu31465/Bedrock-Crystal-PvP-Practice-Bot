@@ -38,7 +38,7 @@ import {
 } from "./inventory.js";
 import {
   handleSwordCombo, handleCrystalCombo, handleAnchorCombo,
-  chooseBestExplosiveAction, handleSimThreatDefense, handleSimRangedAttack,
+  chooseBestExplosiveAction, handleSimThreatDefense, handleSimCrossbowAttack, handleSimShieldGuard,
 } from "./combat.js";
 import {
   handleMovement, handlePearlMove, handleGoldenAppleBuff,
@@ -172,17 +172,23 @@ function tickBots() {
     // Defense (inbound projectiles / hostile explosives)
     void handleSimThreatDefense(bot, target, config);
 
+    // Shield Guard (raise against the enemy's crystal)
+    void handleSimShieldGuard(bot, target, config);
+
     // Combat
-    const explosiveAction = chooseBestExplosiveAction(bot, target, config);
+    const guardActive = Boolean(getRuntime(config.uid).shieldGuardState?.active);
+    const explosiveAction = guardActive ? undefined : chooseBestExplosiveAction(bot, target, config);
     if (explosiveAction) {
       if (explosiveAction.type === "anchor") {
         handleAnchorCombo(bot, target, config, explosiveAction.candidate);
       } else {
         handleCrystalCombo(bot, target, config, explosiveAction.candidate);
       }
-    } else {
+      // 武器bash may also be executed during explosive turns (simultaneous attack — suppress the weapon attack of the dice roll lineage)
       handleSwordCombo(bot, target, config);
-      void handleSimRangedAttack(bot, target, config);
+    } else if (!guardActive) {
+      handleSwordCombo(bot, target, config);
+      void handleSimCrossbowAttack(bot, target, config);
     }
 
     // Visual sync

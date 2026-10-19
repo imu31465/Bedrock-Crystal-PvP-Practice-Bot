@@ -259,6 +259,9 @@ async function openBotSettingsModal(player, bot) {
     .slider("[戦闘] アンカーの起爆遅れ (0=即座, 10=0.5秒)", 0, 10, { valueStep: 1, defaultValue: config.anchorDetonateDelay })
     .toggle("[戦闘] アンカー破壊パターンをキャッシュ (ラグ軽減)", { defaultValue: config.anchorBreakCache ?? true })
     .toggle("[戦闘] 逃げ場がない時は反撃せず回復に専念する", { defaultValue: config.eatWhenCornered ?? true })
+    .toggle("[戦闘] クロスボウで落下速度低下矢を撃つ", { defaultValue: config.crossbowCombo })
+    .toggle("[戦闘] 爆破ダメージ軽減 (遮蔽ブロックを設置する)", { defaultValue: config.blastMitigation })
+    .toggle("[戦闘] 盾ガード (敵クリスタルに盾で応戦)", { defaultValue: config.shieldGuard })
     .toggle("[人間味] 遅れ・ブレ・ミスを有効にする", { defaultValue: config.humanize })
     .slider("[人間味] 反応の遅れ (大きいほど鈍い)", 0, 12, { valueStep: 1, defaultValue: config.reactionDelay })
     .slider("[人間味] 視線のブレ (%)", 0, 30, { valueStep: 1, defaultValue: Math.round(Number(config.aimJitter ?? 0) * 100) })
@@ -283,11 +286,11 @@ async function openBotSettingsModal(player, bot) {
     runtime.isConfiguring = false;
   }
   if (response.canceled || !response.formValues) return;
-  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
+  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
   const current = ensureBotInitialized(bot, player);
   if (!current) return;
   const updated = persistBotConfig(bot, {
-    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
+    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
     debug: { enabled: debugEnabled, movement: debugMovement, scan: debugScan, combat: debugCombat, health: debugHealth, totem: debugTotem, loadout: debugLoadout, inventory: debugInventory },
   });
   bot.nameTag = updated.displayName || getDefaultBotDisplayName(updated.uid);

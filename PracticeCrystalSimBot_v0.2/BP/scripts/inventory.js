@@ -800,7 +800,7 @@ export function seedBotLoadout(bot) {
     new ItemStack(RESPAWN_ANCHOR_ID, 8), new ItemStack(GLOWSTONE_ID, 16),
     new ItemStack(ENDER_PEARL_ID, 16), new ItemStack(TOTEM_ID, 8),
     new ItemStack(PATCH_ENCHANTED_GOLDEN_APPLE_ID, 4), new ItemStack(PATCH_GOLDEN_APPLE_ID, 8),
-    new ItemStack("minecraft:shield", 1), new ItemStack("minecraft:bow", 1), new ItemStack("minecraft:crossbow", 1),
+    new ItemStack("minecraft:shield", 1), new ItemStack("minecraft:crossbow", 1),
   ];
   for (const item of starterItems) patchPlaceItemInContainer(inventory, item);
   if (equippable) {

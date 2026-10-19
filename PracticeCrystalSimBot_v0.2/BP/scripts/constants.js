@@ -350,6 +350,7 @@ export const PATCH_DIFFICULTY_PRESETS = {
     targetMobs: true, targetBots: true, autoTotem: true,
     pathfinding: true, blockPlacing: true, highGroundTactic: true,
     escapeTeleport: true, lookTurnSpeed: 70, humanize: false,
+    crossbowCombo: true, blastMitigation: true, shieldGuard: true,
   },
 };
 
