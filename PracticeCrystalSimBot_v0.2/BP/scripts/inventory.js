@@ -3,7 +3,8 @@ import {
   BOT_TYPE, TOTEM_ID, OBSIDIAN_ID, END_CRYSTAL_ID,
   RESPAWN_ANCHOR_ID, GLOWSTONE_ID, ENDER_PEARL_ID, AIR_ID,
   SWORD_STATS, PICKAXE_STATS, BOT_ARMOR, BOT_ARMOR_ENCHANTMENTS,
-  BOT_SWORD_ENCHANTMENTS, PATCH_MANAGED_STACK_ITEM_IDS,
+  BOT_SWORD_ENCHANTMENTS, BOT_CROSSBOW_ENCHANTMENTS, BOT_BOW_ENCHANTMENTS,
+  BOT_PICKAXE_ENCHANTMENTS, BOT_ELYTRA_ENCHANTMENTS, PATCH_MANAGED_STACK_ITEM_IDS,
   PATCH_DEFAULT_COMBAT_ITEM_COUNTS, PATCH_VISUAL_SLOT_BY_EQUIPMENT,
   PATCH_VISUAL_EQUIPMENT_SELECTOR_RADIUS, PATCH_VISUAL_EQUIPMENT_RESYNC_TICKS,
   PATCH_TOTEM_POP_HEALTH_THRESHOLD, PATCH_TOTEM_POP_HEALTH_RATIO,
@@ -812,12 +813,19 @@ export function seedBotLoadout(bot) {
   for (let i = 0; i < inventory.size; i++) inventory.setItem(i, undefined);
   const starterItems = [
     applyEnchantments(new ItemStack("minecraft:netherite_sword", 1), BOT_SWORD_ENCHANTMENTS, true),
-    new ItemStack(OBSIDIAN_ID, 64), new ItemStack(END_CRYSTAL_ID, 16),
-    new ItemStack(RESPAWN_ANCHOR_ID, 8), new ItemStack(GLOWSTONE_ID, 16),
-    new ItemStack(ENDER_PEARL_ID, 16), new ItemStack(TOTEM_ID, 8),
-    new ItemStack(PATCH_ENCHANTED_GOLDEN_APPLE_ID, 4), new ItemStack(PATCH_GOLDEN_APPLE_ID, 8),
-    new ItemStack("minecraft:shield", 1), new ItemStack("minecraft:crossbow", 1),
+    new ItemStack(OBSIDIAN_ID, 64), new ItemStack(OBSIDIAN_ID, 64),
+    new ItemStack(END_CRYSTAL_ID, 64), new ItemStack(END_CRYSTAL_ID, 64),
+    new ItemStack(RESPAWN_ANCHOR_ID, 64), new ItemStack(RESPAWN_ANCHOR_ID, 64),
+    new ItemStack(GLOWSTONE_ID, 64), new ItemStack(GLOWSTONE_ID, 64),
+    new ItemStack(ENDER_PEARL_ID, 16), new ItemStack(ENDER_PEARL_ID, 16), new ItemStack(ENDER_PEARL_ID, 16),
+    new ItemStack(TOTEM_ID, 8), new ItemStack(PATCH_GOLDEN_APPLE_ID, 64),
+    new ItemStack("minecraft:shield", 1),
+    applyEnchantments(new ItemStack("minecraft:crossbow", 1), BOT_CROSSBOW_ENCHANTMENTS, true),
     new ItemStack("minecraft:netherite_axe", 1),
+    applyEnchantments(new ItemStack("minecraft:netherite_pickaxe", 1), BOT_PICKAXE_ENCHANTMENTS, true),
+    applyEnchantments(new ItemStack("minecraft:bow", 1), BOT_BOW_ENCHANTMENTS, true),
+    applyEnchantments(new ItemStack("minecraft:elytra", 1), BOT_ELYTRA_ENCHANTMENTS, true),
+    new ItemStack("minecraft:firework_rocket", 64),
   ];
   for (const item of starterItems) patchPlaceItemInContainer(inventory, item);
   if (equippable) {

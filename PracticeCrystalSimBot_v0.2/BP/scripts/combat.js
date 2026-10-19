@@ -807,5 +807,168 @@ export function handleSimShieldGuard(bot, target, config) {
   state.active = true;
   state.since = globalTick;
   state.lastRaiseTick = globalTick;
-  debugLog(bot, config, "guard", `\u00a7e[Shield] raise useItem=${raised} dist=${distance(bot.location, hostileCrystal.location).toFixed(1)}`, true);
+    debugLog(bot, config, "guard", `\u00a7e[Shield] raise useItem=${raised} dist=${distance(bot.location, hostileCrystal.location).toFixed(1)}`, true);
+}
+
+// ── Bow Attack (遠距離からの射撃攻撃) ──
+const BOW_COOLDOWN_TICKS = 40;
+const BOW_MAX_RANGE = 48;
+const BOW_ARROW_TRACK_MAX_TICKS = 60;
+const pendingBowArrows = new Map();
+
+export function handleBowAttack(bot, target, config) {
+  if (!config.bowCombo) return false;
+  if (isSpawnProtected(config.uid)) return false;
+  const runtime = getRuntime(config.uid);
+  if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingRangedDraw) return false;
+  if (runtime.shieldGuardState?.active) return false;
+  if (runtime.elytraDashState?.active) return false;
+  if (globalTick - Number(runtime.lastBowTick ?? -9999) < BOW_COOLDOWN_TICKS) return false;
+  const d = distance(bot.location, target.location);
+  if (d < Math.max(8, Number(config.bowDistance ?? 16)) || d > BOW_MAX_RANGE) return false;
+  if (!patchHasCombatLineOfSight(bot, target)) return false;
+  if (targetIsShielded(target)) { debugLog(bot, config, "ranged", "[Bow] target shield up", false); return false; }
+  runtime.lastBowTick = globalTick;
+  runtime.pendingRangedDraw = true;
+  if (!equipMainhandItem(bot, "minecraft:bow", config)) {
+    runtime.pendingRangedDraw = false;
+    runtime.lastBowTick = globalTick - BOW_COOLDOWN_TICKS + 10;
+    return false;
+  }
+  const drawTicks = 18 + Math.floor(Math.random() * 4);
+  const aim = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.5, z: 0 }), config);
+  faceBotToward(bot, aim);
+  debugLog(bot, config, "ranged", `\u00a7b[Bow] drawing ${drawTicks}t dist=${d.toFixed(1)}`, true);
+  system.runTimeout(() => {
+    try {
+      runtime.pendingRangedDraw = false;
+      if (!bot?.isValid) { try { selectBestSword(bot); } catch {} return; }
+      const curD = distance(bot.location, target.location);
+      if (curD < 4 || curD > BOW_MAX_RANGE * 1.2) { selectBestSword(bot); return; }
+      const aimFresh = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.5, z: 0 }), config);
+      faceBotToward(bot, aimFresh);
+      let firedArrow = null;
+      try {
+        const eye = addVector(bot.location, { x: 0, y: 1.55, z: 0 });
+        const drop = curD * curD * 0.0045;
+        const aimPoint = addVector(aimFresh, { x: 0, y: drop, z: 0 });
+        const delta = vectorTo(eye, aimPoint);
+        const len = Math.hypot(delta.x, delta.y, delta.z) || 1;
+        const dir = { x: delta.x / len, y: delta.y / len, z: delta.z / len };
+        firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        let shot = false;
+        try { firedArrow.shoot?.({ direction: dir, speed: 3.2 }); shot = true; } catch {}
+        if (!shot) { try { firedArrow.applyImpulse({ x: dir.x * 3.2, y: dir.y * 3.2, z: dir.z * 3.2 }); shot = true; } catch {} }
+        if (!shot) { try { firedArrow.remove(); } catch {} firedArrow = null; }
+      } catch { firedArrow = null; }
+      if (firedArrow) {
+        debugLog(bot, config, "ranged", `\u00a7b[Bow] fired dist=${curD.toFixed(1)}`, true);
+        trackBowArrow(bot, firedArrow, target, config);
+        system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
+      } else {
+        selectBestSword(bot);
+      }
+    } catch {
+      try { runtime.pendingRangedDraw = false; selectBestSword(bot); } catch {}
+    }
+  }, drawTicks);
+  return true;
+}
+
+function trackBowArrow(bot, arrow, target, config) {
+  const entry = { arrow, target, bot, config, ticks: 0 };
+  pendingBowArrows.set(String(arrow.id), entry);
+  const step = () => {
+    try {
+      if (!entry.arrow?.isValid) { pendingBowArrows.delete(String(arrow.id)); return; }
+      if (entry.ticks > BOW_ARROW_TRACK_MAX_TICKS || !entry.target?.isValid) {
+        try { entry.arrow.remove(); } catch {}
+        pendingBowArrows.delete(String(arrow.id));
+        return;
+      }
+      entry.ticks++;
+      const hit = distance(entry.arrow.location, entry.target.location);
+      if (hit < 1.0) {
+        const dmg = patchCalculateNetDamage(entry.target, 9.5, "projectile");
+        patchApplyDamageWithFallback(entry.target, dmg, "projectile", entry.bot);
+        debugLog(entry.bot, entry.config, "ranged", `\u00a7b[Bow] hit dmg=${dmg.toFixed(1)}`, true);
+        try { entry.arrow.remove(); } catch {}
+        pendingBowArrows.delete(String(arrow.id));
+        return;
+      }
+      system.runTimeout(step, 1);
+    } catch {
+      pendingBowArrows.delete(String(arrow.id));
+    }
+  };
+  system.runTimeout(step, 1);
+}
+
+// ── Elytra Dash (チェスト⇔エリトラ着替え→花火ブースト急接近) ──
+const ELYTRA_DASH_COOLDOWN_TICKS = 200; // 10秒
+const ELYTRA_DASH_MAX_TICKS = 30;
+const ELYTRA_SKY_CHECK_BLOCKS = 7;
+
+export function handleElytraDash(bot, target, config) {
+  if (!config.elytraDash) return false;
+  if (isSpawnProtected(config.uid)) return false;
+  const runtime = getRuntime(config.uid);
+  if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingRangedDraw) return false;
+  if (runtime.shieldGuardState?.active) return false;
+  if (runtime.elytraDashState?.active) return false;
+  if (globalTick - Number(runtime.lastElytraDashTick ?? -9999) < ELYTRA_DASH_COOLDOWN_TICKS) return false;
+  const d = distance(bot.location, target.location);
+  if (d < Math.max(8, Number(config.elytraDistance ?? 12))) return false;
+  if (!patchHasCombatLineOfSight(bot, target)) return false;
+  try {
+    for (let h = 1; h <= ELYTRA_SKY_CHECK_BLOCKS; h++) {
+      if (isSolidBlock(getBlock(bot.dimension, addVector(bot.location, { x: 0, y: h, z: 0 })))) return false;
+    }
+  } catch { return false; }
+  const equippable = getEquippableComponent(bot);
+  if (!equippable) return false;
+  let chestItem;
+  try { chestItem = equippable.getEquipment?.(EquipmentSlot.Chest); } catch {}
+  if (chestItem?.typeId === "minecraft:elytra") return false;
+  runtime.lastElytraDashTick = globalTick;
+  const state = { active: true, until: globalTick + ELYTRA_DASH_MAX_TICKS, chestItem: chestItem ?? undefined, ticks: 0 };
+  runtime.elytraDashState = state;
+  try { equippable.setEquipment(EquipmentSlot.Chest, new ItemStack("minecraft:elytra", 1)); } catch {}
+  faceBotToward(bot, addVector(target.location, { x: 0, y: 1.0, z: 0 }));
+  const launchDir = normalize2D(vectorTo(bot.location, target.location));
+  try { bot.applyImpulse({ x: launchDir.x * 0.9, y: 0.45, z: launchDir.z * 0.9 }); } catch {}
+  debugLog(bot, config, "combat", `\u00a75[Elytra] dash dist=${d.toFixed(1)}`, true);
+  const glideStep = () => {
+    try {
+      if (!bot?.isValid || !state.active) { endElytraDash(bot, config, state); return; }
+      state.ticks++;
+      const curD = distance(bot.location, target.location);
+      if (state.ticks >= ELYTRA_DASH_MAX_TICKS || curD < 3) { endElytraDash(bot, config, state); return; }
+      const dir = normalize2D(vectorTo(bot.location, target.location));
+      try { bot.applyImpulse({ x: dir.x * 0.85, y: 0.12, z: dir.z * 0.85 }); } catch {}
+      if (state.ticks === 1) {
+        try {
+          const rocket = bot.dimension.spawnEntity("minecraft:fireworks_rocket", addVector(bot.location, { x: 0, y: 0.5, z: 0 }));
+          try { rocket.applyImpulse({ x: dir.x * 1.6, y: 0.6, z: dir.z * 1.6 }); } catch {}
+          system.runTimeout(() => { try { rocket.remove(); } catch {} }, 30);
+        } catch {}
+      }
+      system.runTimeout(glideStep, 3);
+    } catch { endElytraDash(bot, config, state); }
+  };
+  system.runTimeout(glideStep, 1);
+  return true;
+}
+
+function endElytraDash(bot, config, state) {
+  try {
+    state.active = false;
+    try { getRuntime(config.uid).elytraDashState = undefined; } catch {}
+    const equippable = getEquippableComponent(bot);
+    if (equippable) {
+      try { equippable.setEquipment(EquipmentSlot.Chest, state.chestItem ?? new ItemStack("minecraft:netherite_chestplate", 1)); } catch {}
+    }
+    try { selectBestSword(bot); } catch {}
+    debugLog(bot, config, "combat", "\u00a75[Elytra] land -> chest restore", true);
+  } catch {}
 }

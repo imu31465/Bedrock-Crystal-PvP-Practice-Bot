@@ -39,6 +39,7 @@ import {
 import {
   handleSwordCombo, handleCrystalCombo, handleAnchorCombo,
   chooseBestExplosiveAction, handleSimThreatDefense, handleSimCrossbowAttack, handleSimShieldGuard, handleAxeShieldBreak,
+  handleBowAttack, handleElytraDash,
 } from "./combat.js";
 import {
   handleMovement, handlePearlMove, handleGoldenAppleBuff,
@@ -163,8 +164,8 @@ function tickBots() {
       ensureBotEquipmentIntegrity(bot, config);
     }
 
-    // Movement
-    handleMovement(bot, target, config);
+    // Movement (エリトラ滑空中は移動エンジンを止める)
+    if (!getRuntime(config.uid).elytraDashState?.active) handleMovement(bot, target, config);
 
     // Pearl move
     handlePearlMove(bot, target, config);
@@ -189,6 +190,10 @@ function tickBots() {
     } else if (!guardActive) {
       // 相手が盾を構えていたら斧で破解(5秒無効化 → クロスボウも再開)
       handleAxeShieldBreak(bot, target, config);
+      // エリトラ急接近(距離が離れていて真上が空いている時)
+      handleElytraDash(bot, target, config);
+      // 弓で射撃(距離が離れている時)
+      handleBowAttack(bot, target, config);
       handleSwordCombo(bot, target, config);
       void handleSimCrossbowAttack(bot, target, config);
     }

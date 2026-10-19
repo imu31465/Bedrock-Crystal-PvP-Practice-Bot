@@ -142,7 +142,7 @@ export const TACTIC_PLACE_COOLDOWN_TICKS = 5;
 export const TACTIC_ORBIT_DISTANCE_TOLERANCE = 0.55;
 export const TACTIC_LEDGE_SAFETY_MARGIN = 3.5;
 export const MOVE_FILLER_BLOCK_IDS = [
-  "minecraft:cobblestone", "minecraft:stone", "minecraft:dirt", OBSIDIAN_ID,
+  OBSIDIAN_ID,
 ];
 export const PATCH_ANCHOR_NATIVE_BREAK_CHECK_RADIUS = 4.75;
 export const PATCH_ANCHOR_NATIVE_BREAK_MIN_CHANGED_BLOCKS = 1;
@@ -200,27 +200,65 @@ export const BOT_ARMOR = [
 
 export const BOT_SWORD_ENCHANTMENTS = [
   { id: "minecraft:sharpness", level: 5 },
-  { id: "minecraft:knockback", level: 1 },
+  { id: "minecraft:knockback", level: 2 },
+  { id: "minecraft:fire_aspect", level: 2 },
+  { id: "minecraft:looting", level: 3 },
   { id: "minecraft:unbreaking", level: 3 },
+  { id: "minecraft:mending", level: 1 },
+];
+
+export const BOT_CROSSBOW_ENCHANTMENTS = [
+  { id: "minecraft:multishot", level: 1 },
+  { id: "minecraft:quick_charge", level: 3 },
+  { id: "minecraft:unbreaking", level: 3 },
+  { id: "minecraft:mending", level: 1 },
+];
+
+export const BOT_BOW_ENCHANTMENTS = [
+  { id: "minecraft:power", level: 5 },
+  { id: "minecraft:flame", level: 1 },
+  { id: "minecraft:punch", level: 2 },
+  { id: "minecraft:unbreaking", level: 3 },
+  { id: "minecraft:mending", level: 1 },
+];
+
+export const BOT_PICKAXE_ENCHANTMENTS = [
+  { id: "minecraft:efficiency", level: 5 },
+  { id: "minecraft:unbreaking", level: 3 },
+  { id: "minecraft:mending", level: 1 },
+];
+
+export const BOT_ELYTRA_ENCHANTMENTS = [
+  { id: "minecraft:unbreaking", level: 3 },
+  { id: "minecraft:mending", level: 1 },
 ];
 
 export const BOT_ARMOR_ENCHANTMENTS = {
   [EquipmentSlot.Head]: [
+    { id: "minecraft:respiration", level: 3 },
+    { id: "minecraft:aqua_affinity", level: 1 },
     { id: "minecraft:blast_protection", level: 4 },
     { id: "minecraft:unbreaking", level: 3 },
+    { id: "minecraft:mending", level: 1 },
   ],
   [EquipmentSlot.Chest]: [
     { id: "minecraft:blast_protection", level: 4 },
     { id: "minecraft:unbreaking", level: 3 },
+    { id: "minecraft:mending", level: 1 },
   ],
   [EquipmentSlot.Legs]: [
+    { id: "minecraft:swift_sneak", level: 3 },
     { id: "minecraft:blast_protection", level: 4 },
     { id: "minecraft:unbreaking", level: 3 },
+    { id: "minecraft:mending", level: 1 },
   ],
   [EquipmentSlot.Feet]: [
-    { id: "minecraft:blast_protection", level: 4 },
+    { id: "minecraft:depth_strider", level: 3 },
     { id: "minecraft:feather_falling", level: 4 },
+    { id: "minecraft:soul_speed", level: 3 },
+    { id: "minecraft:blast_protection", level: 4 },
     { id: "minecraft:unbreaking", level: 3 },
+    { id: "minecraft:mending", level: 1 },
   ],
 };
 
@@ -285,17 +323,16 @@ export function getAnchorBreakOffsetsCachePool() {
 export const PATCH_MANAGED_STACK_ITEM_IDS = [
   OBSIDIAN_ID, END_CRYSTAL_ID, RESPAWN_ANCHOR_ID, GLOWSTONE_ID,
   ENDER_PEARL_ID, TOTEM_ID, PATCH_ENCHANTED_GOLDEN_APPLE_ID,
-  PATCH_GOLDEN_APPLE_ID, "minecraft:cobblestone", "minecraft:dirt", "minecraft:stone",
-  "minecraft:diamond_pickaxe",
+  PATCH_GOLDEN_APPLE_ID,
+  "minecraft:netherite_pickaxe",
 ];
 
 export const PATCH_DEFAULT_COMBAT_ITEM_COUNTS = {
   [OBSIDIAN_ID]: 64, [END_CRYSTAL_ID]: 64, [RESPAWN_ANCHOR_ID]: 32,
   [GLOWSTONE_ID]: 64, [ENDER_PEARL_ID]: 16,
   [PATCH_ENCHANTED_GOLDEN_APPLE_ID]: 8, [PATCH_GOLDEN_APPLE_ID]: 16,
-  [TOTEM_ID]: 8, ["minecraft:cobblestone"]: 64,
-  ["minecraft:dirt"]: 64, ["minecraft:stone"]: 64,
-  "minecraft:diamond_pickaxe": 1,
+  [TOTEM_ID]: 8,
+  "minecraft:netherite_pickaxe": 1,
 };
 
 export const PATCH_ARMOR_MATERIAL_SCORES = {
@@ -343,14 +380,17 @@ export const PATCH_DIFFICULTY_PRESETS = {
     escapeTeleport: true, lookTurnSpeed: 32, humanize: true,
   },
   hard: {
-    maintainDistance: 2, pearlDistance: 8, pearlCooldown: 20,
+    maintainDistance: 2, pearlDistance: 8, pearlCooldown: 12,
     swordCooldown: 0, crystalCooldown: 0, crystalDetonateDelay: 0,
     anchorCooldown: 0, anchorDetonateDelay: 0, totemRefillDelay: 0,
-    reactionDelay: 0, jumpDash: true, pearlRecover: false,
+    reactionDelay: 0, aimJitter: 0, mistakeRate: 0, suboptimalRate: 0,
+    jumpDash: true, pearlRecover: false, strafeMove: true,
     targetMobs: true, targetBots: true, autoTotem: true,
     pathfinding: true, blockPlacing: true, highGroundTactic: true,
-    escapeTeleport: true, lookTurnSpeed: 70, humanize: false,
+    escapeTeleport: true, lookTurnSpeed: 120, humanize: false,
     crossbowCombo: true, blastMitigation: true, shieldGuard: true,
+    bowCombo: true, bowDistance: 16, elytraDash: true, elytraDistance: 12,
+    ignoreSelfDamage: true, tickInterval: 1,
   },
 };
 
