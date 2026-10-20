@@ -25,6 +25,7 @@ import {
   patchIsCombatTargetUsable, patchResolvePendingCombatTarget,
   faceBotToward, setBotLookAt, tryPlayAnimation,
   debugLog, isSpawnProtected, patchGetNearbyCrystalEntities,
+  countItemInContainer,
   spawnEntityWithFallback, getExplosionLocation, findNearestTarget,
   patchRunDimensionCommandNoThrow, quoteCoord,
 } from "./utils.js";
@@ -940,6 +941,11 @@ export async function handleSimThreatDefense(bot, target, config) {
 }
 
 export function handleSimCrossbowAttack(bot, target, config) {
+  // [P1][診断] クロスボウが発動しない原因を特定するゲートトレース (2秒毎)
+  if (globalTick % 40 === 0) {
+    const d0 = distance(bot.location, target.location);
+    debugLog(bot, config, "combat", `[XBowGate] combo=${config.crossbowCombo} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} shielded=${targetIsShielded(target)} xbowInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, "minecraft:crossbow")}`);
+  }
   if (!config.crossbowCombo) return false;
   if (isSpawnProtected(config.uid)) return false;
   const runtime = getRuntime(config.uid);
@@ -1150,6 +1156,11 @@ const BOW_ARROW_TRACK_MAX_TICKS = 60;
 const pendingBowArrows = new Map();
 
 export function handleBowAttack(bot, target, config) {
+  // [P1][診断] 弓が発動しない原因を特定するゲートトレース (2秒毎)
+  if (globalTick % 40 === 0) {
+    const d0 = distance(bot.location, target.location);
+    debugLog(bot, config, "combat", `[BowGate] combo=${config.bowCombo} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} shielded=${targetIsShielded(target)} bowInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, "minecraft:bow")}`);
+  }
   if (!config.bowCombo) return false;
   if (isSpawnProtected(config.uid)) return false;
   const runtime = getRuntime(config.uid);
@@ -1250,6 +1261,18 @@ const ELYTRA_DASH_COOLDOWN_TICKS = 160; // 8秒
 const ELYTRA_SKY_CHECK_BLOCKS = 7;
 
 export function handleElytraMaceDive(bot, target, config) {
+  // [P1][診断] 急降下が発動しない原因を特定するゲートトレース (2秒毎)
+  if (globalTick % 40 === 0) {
+    const d0 = distance(bot.location, target.location);
+    let skyFree = true;
+    try {
+      for (let h = 1; h <= ELYTRA_SKY_CHECK_BLOCKS; h++) {
+        if (isSolidBlock(getBlock(bot.dimension, addVector(bot.location, { x: 0, y: h, z: 0 })))) { skyFree = false; break; }
+      }
+    } catch { skyFree = false; }
+    const traceRuntime = getRuntime(config.uid);
+    debugLog(bot, config, "combat", `[DiveGate] dash=${config.elytraDash} maceCombo=${config.maceCombo} cd=${Math.max(0, ELYTRA_DASH_COOLDOWN_TICKS - (globalTick - Number(traceRuntime.lastElytraDashTick ?? -9999)))} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} skyFree=${skyFree} hp=${patchGetCurrentHealthValue(bot).toFixed(1)} maceInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, MACE_ID)}`);
+  }
   if (!config.elytraDash) return false;
   if (config.maceCombo === false) return false;
   if (isSpawnProtected(config.uid)) return false;
