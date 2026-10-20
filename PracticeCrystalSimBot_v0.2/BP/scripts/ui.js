@@ -238,7 +238,7 @@ async function openBotSettingsModal(player, bot) {
     .slider("[基本] 採掘開始までのスタック時間 (0=即座, 120=6秒)", 0, 120, { valueStep: 10, defaultValue: config.mineStuckTicksThreshold ?? 40 })
     .toggle("[移動] 経路探索(A*)で賢く移動する", { defaultValue: config.pathfinding ?? true })
     .toggle("[移動] ブロックを置いて登る/橋を架ける", { defaultValue: config.blockPlacing ?? true })
-    .toggle("[移動] 高所を取ってから戦う", { defaultValue: config.highGroundTactic ?? true })
+    .toggle("[移動] 低位を取ってから戦う (ローグラウンド)", { defaultValue: config.highGroundTactic ?? true })
     .toggle("[移動] 完全に詰んだ時だけワープで脱出する", { defaultValue: config.escapeTeleport ?? true })
     .slider("[移動] 視線の追従速度 (小=人間らしい, 大=瞬時)", 6, 180, { valueStep: 2, defaultValue: config.lookTurnSpeed ?? 42 })
     .toggle("[アイテム] 自動トーテム補充", { defaultValue: config.autoTotem })
@@ -259,13 +259,17 @@ async function openBotSettingsModal(player, bot) {
     .slider("[戦闘] アンカーの起爆遅れ (0=即座, 10=0.5秒)", 0, 10, { valueStep: 1, defaultValue: config.anchorDetonateDelay })
     .toggle("[戦闘] アンカー破壊パターンをキャッシュ (ラグ軽減)", { defaultValue: config.anchorBreakCache ?? true })
     .toggle("[戦闘] 逃げ場がない時は反撃せず回復に専念する", { defaultValue: config.eatWhenCornered ?? true })
-    .toggle("[戦闘] クロスボウで落下速度低下矢を撃つ", { defaultValue: config.crossbowCombo })
+    .toggle("[戦闘] クロスボウで射撃する (実弾・エンジン判定)", { defaultValue: config.crossbowCombo })
     .toggle("[戦闘] 爆破ダメージ軽減 (遮蔽ブロックを設置する)", { defaultValue: config.blastMitigation })
-    .toggle("[戦闘] 盾ガード (敵クリスタルに盾で応戦)", { defaultValue: config.shieldGuard })
+    .toggle("[戦闘] 盾ガード (投射物を防御)", { defaultValue: config.shieldGuard })
     .toggle("[戦闘] 弓で射撃 (距離が離れている時)", { defaultValue: config.bowCombo ?? true })
     .slider("[戦闘] 弓の最短射撃距離 (ブロック)", 8, 40, { valueStep: 1, defaultValue: config.bowDistance ?? 16 })
-    .toggle("[戦闘] エリトラで急接近する", { defaultValue: config.elytraDash ?? true })
+    .toggle("[戦闘] エリトラ+メイス落下攻撃 (急降下コンボ)", { defaultValue: config.maceCombo ?? true })
+    .toggle("[戦闘] エリトラを使う", { defaultValue: config.elytraDash ?? true })
     .slider("[戦闘] エリトラの発動距離 (ブロック)", 6, 32, { valueStep: 1, defaultValue: config.elytraDistance ?? 12 })
+    .toggle("[戦闘] サラウンド (相手を黒曜石で囲む)", { defaultValue: config.surroundTactic ?? true })
+    .toggle("[戦闘] 自爆移動 (クリスタルサーフ/アンカージャンプ)", { defaultValue: config.crystalSurf ?? true })
+    .toggle("[戦闘] ベッド爆弾 (ネザー/エンド限定)", { defaultValue: config.bedCombo ?? false })
     .toggle("[人間味] 遅れ・ブレ・ミスを有効にする", { defaultValue: config.humanize })
     .slider("[人間味] 反応の遅れ (大きいほど鈍い)", 0, 12, { valueStep: 1, defaultValue: config.reactionDelay })
     .slider("[人間味] 視線のブレ (%)", 0, 30, { valueStep: 1, defaultValue: Math.round(Number(config.aimJitter ?? 0) * 100) })
@@ -290,11 +294,11 @@ async function openBotSettingsModal(player, bot) {
     runtime.isConfiguring = false;
   }
   if (response.canceled || !response.formValues) return;
-  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, elytraDash, elytraDistance, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
+  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
   const current = ensureBotInitialized(bot, player);
   if (!current) return;
   const updated = persistBotConfig(bot, {
-    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, elytraDash, elytraDistance, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
+    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
     debug: { enabled: debugEnabled, movement: debugMovement, scan: debugScan, combat: debugCombat, health: debugHealth, totem: debugTotem, loadout: debugLoadout, inventory: debugInventory },
   });
   bot.nameTag = updated.displayName || getDefaultBotDisplayName(updated.uid);

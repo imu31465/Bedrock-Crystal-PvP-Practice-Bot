@@ -66,8 +66,11 @@ export const STRAFE_FLIP_INTERVAL = 14;
 export const BOT_SPAWN_GRACE_TICKS = 20;
 export const CRYSTAL_POWER = 6;
 export const ANCHOR_POWER = 5.0;
-export const CRYSTAL_DAMAGE_SCORE_RADIUS = 6;
-export const ANCHOR_DAMAGE_SCORE_RADIUS = 5.25;
+// [A-6] 実体影響半径 = 2P（Wiki「Explosion」）。旧 6/5.25 は誤りだった推定半径。
+// ダメージ推定は estimateExplosionDamage() が P から自動計算するため、
+// 以下は参照値（キャリブレーション表示用）としてのみ使用する。
+export const CRYSTAL_DAMAGE_SCORE_RADIUS = 12; // 2 * CRYSTAL_POWER
+export const ANCHOR_DAMAGE_SCORE_RADIUS = 10;  // 2 * ANCHOR_POWER
 export const COMBAT_PLACEMENT_ENTITY_RADIUS = 0.78;
 export const COMBAT_PLACEMENT_ENTITY_HEIGHT = 1.9;
 export const RESPAWN_ANCHOR_CHARGE_STATE = "respawn_anchor_charge";
@@ -86,7 +89,10 @@ export const DEBUG_THROTTLE = {
 
 export const PATCH_GOLDEN_APPLE_ID = "minecraft:golden_apple";
 export const PATCH_ENCHANTED_GOLDEN_APPLE_ID = "minecraft:enchanted_golden_apple";
-export const PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE = 6.25;
+// [F-4] 爆発系の設置・起爆干渉距離。旧 6.25 は実プレイヤーの設置リーチを超えていた
+// （Botが届かない距離から起爆できる = パリティ違反）。Java版実測 ~4.5 を暫定上限とし、
+// Bedrock実測値は A-7 キャリブレーション（pvpbot:chainstats 添付の検証手順参照）で確定する。
+export const PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE = 4.5;
 export const PATCH_ARMOR_EFFECT_REFRESH_TICKS = 6;
 export const PATCH_FOOD_REEQUIP_DELAY = 8;
 export const PATCH_FOOD_REUSE_BUFFER_TICKS = 20;
@@ -133,7 +139,10 @@ export const STUCK_DETOUR_HOLD_TICKS = 14;
 export const LOOK_TURN_SPEED_COMBAT = 42;
 export const LOOK_TURN_SPEED_TRAVEL = 26;
 // 位置戦術
-export const TACTIC_HIGH_GROUND_BONUS_Y = 2.0;
+// [B-7] CrystalPvPの実戦メタは「低位有利」(2b2t Wiki: gaining the lower ground)。
+// 爆風は体の下面にのみ当たり上面には当たらないため、低い位置に立つ側が有利。
+export const TACTIC_HIGH_GROUND_BONUS_Y = 2.0; // 旧名の互換定数（未使用）
+export const TACTIC_LOW_GROUND_SEARCH_Y = 2.0;  // 相手足元から下へ探索する深さ
 export const TACTIC_TARGET_ABOVE_THRESHOLD = 2.2;
 export const TACTIC_TARGET_BELOW_THRESHOLD = 2.0;
 export const TACTIC_PILLAR_MAX_HEIGHT = 8;
@@ -141,6 +150,45 @@ export const TACTIC_BRIDGE_MAX_LENGTH = 6;
 export const TACTIC_PLACE_COOLDOWN_TICKS = 5;
 export const TACTIC_ORBIT_DISTANCE_TOLERANCE = 0.55;
 export const TACTIC_LEDGE_SAFETY_MARGIN = 3.5;
+// [B-1] ヒットクリスタリング: 剣で浮かせてから着地地点に設置→落下開始で起爆
+export const HIT_CRYSTAL_LAUNCH_VELOCITY = 0.1;   // 浮き判定の最小上向き速度
+export const HIT_CRYSTAL_FALL_VELOCITY = -0.05;  // 落下開始判定
+export const HIT_CRYSTAL_TIMEOUT_TICKS = 12;
+// [B-3] サラウンド: 相手の周囲4面+足元を黒曜石で封鎖
+export const SURROUND_OFFSETS = [
+  { x: 1, y: 0, z: 0 }, { x: -1, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 },
+  { x: 0, y: -1, z: 0 }, // 足元（床抜け防止）
+];
+export const SURROUND_MIN_SEAL = 4;          // 4面封鎖で成立
+export const SURROUND_COOLDOWN_TICKS = 60;   // 成立後の再試行間隔 3秒
+export const SURROUND_WIP_COOLDOWN_TICKS = 10; // [v0.5.0] 封鎖未完成のうちは高速試行
+export const SURROUND_TARGET_MAX_SPEED = 0.08; // 相手がほぼ静止している時のみ
+// [v0.5.0] サラウンド連携: 囲い進行中/成立後の起爆位置制御（ユーザー実機指摘の是正）
+// 囲った相手への側面起爆は囲いが相手の盾になるため実質禁止し、頭上起爆へ誘導する。
+export const SURROUND_SEAL_EXPIRE_TICKS = 120; // 囲い情報の有効期限 6秒
+export const SURROUND_SIDE_PENALTY = 40;       // 囲い済み相手への側面/足元起爆の減点
+export const SURROUND_TOP_BONUS = 25;          // 囲いの真上（頭上）起爆のボーナス
+// [v0.5.0] 遮蔽防御の即応性（ユーザー実機指摘「全然置けてない」の是正）
+export const DEFENSE_SCAN_TICKS = 4;           // 脅威スキャン間隔 4tick（旧10）
+export const DEFENSE_BLOCK_CD_TICKS = 8;       // 遮蔽設置CD 8tick（旧16）
+export const DEFENSE_THREAT_RADIUS = 8;        // 脅威検知半径 8（旧6.5）
+export const DEFENSE_PREEMPT_CD_TICKS = 100;   // 予測先回り遮蔽のCD 5秒
+// [B-4] i-frame明けジャスト起爆 (d-tap)
+export const IFRAME_TICKS = 10;              // 無敵フレーム 10tick
+// [B-2] 予測設置: Java物理で数ティック先を撃つ
+export const PREDICTION_TICKS_AHEAD = 4;
+export const PREDICTION_BONUS = 6;
+export const JAVA_GRAVITY_PER_TICK = 0.08;   // Java版の重力加速度
+export const JAVA_FRICTION_PER_TICK = 0.91;  // Java版の接地摩擦
+export const JAVA_TERMINAL_VELOCITY = -3.92;
+// [C-2/C-3] クリスタルサーフィン・アンカージャンプ
+export const SURF_MIN_HP_AFTER = 6;          // 自傷後にこのHPを下回るなら不発
+export const SURF_COOLDOWN_TICKS = 100;      // 5秒
+// [B-5] ベッド爆弾 (ネザー/ジ・エンド限定)
+export const BED_COMBO_COOLDOWN_TICKS = 160; // 8秒
+// [F-2] Bedrockは水中の爆発が無ダメージ (MCPE-21611, Works As Intended)
+// → 推定値0として扱い、水中の対象への無駄設置を防ぐ（実ダメージはエンジン判定）
+export const WATER_ID = "minecraft:water";
 export const MOVE_FILLER_BLOCK_IDS = [
   OBSIDIAN_ID,
 ];
@@ -160,7 +208,10 @@ export const PATCH_TOTEM_POP_HEALTH_RATIO = 0.22;
 export const PATCH_TOTEM_POP_COOLDOWN_TICKS = 8;
 export const PATCH_TOTEM_DAMAGE_IMMUNITY_TICKS = 10;
 export const PATCH_TOTEM_DAMAGE_BUFFER = 1.25;
-export const PATCH_TOTEM_REVIVE_HEALTH = 2;
+// [A-3] トーテム発火時のHPは1（Wiki「Totem of Undying」）。旧 2 は誤り。
+// SimBot(SimulatedPlayer)は実プレイヤーであり、オフハンドの実トーテムは
+// エンジンが自動発火する。以下の手動レイヤーはフォールバック専用。
+export const PATCH_TOTEM_REVIVE_HEALTH = 1;
 export const PATCH_TOTEM_REGEN_TICKS = 900;
 export const PATCH_TOTEM_ABSORPTION_TICKS = 100;
 export const PATCH_TOTEM_FIRE_RESISTANCE_TICKS = 800;
@@ -232,6 +283,23 @@ export const BOT_ELYTRA_ENCHANTMENTS = [
   { id: "minecraft:unbreaking", level: 3 },
   { id: "minecraft:mending", level: 1 },
 ];
+
+// [v0.5.0] メイス（エリトラ落下攻撃コンボ用）
+// 注意: density / breach / wind_burst は相互排他。エリトラ急降下→メイスの定番は
+// Wind Burst（ヒット時に突風で跳ね上がり連撃できる）。火力特化なら density V、
+// フル装備相手なら breach IV に差し替え。
+export const MACE_ID = "minecraft:mace";
+export const BOT_MACE_ENCHANTMENTS = [
+  { id: "minecraft:wind_burst", level: 3 },
+  { id: "minecraft:unbreaking", level: 3 },
+  { id: "minecraft:mending", level: 1 },
+];
+// [v0.5.0] エリトラ+メイス急降下（上空滞留を廃して被弾を最小化する再設計）
+export const ELYTRA_DIVE_RISE_MAX_TICKS = 10;  // 上昇フェーズの上限（被弾暴露の最小化）
+export const ELYTRA_DIVE_AIM_HEIGHT = 7;       // 相手+7ブロックを目標高度
+export const ELYTRA_DIVE_TOTAL_MAX_TICKS = 26; // 滞空総上限（旧30）
+export const MACE_DIVE_ATTACK_RANGE = 3.0;     // simulateAttack を叩く距離
+export const MACE_DIVE_ATTACKS_MAX = 2;        // Wind Burst 跳ね返り後の再攻撃回数
 
 export const BOT_ARMOR_ENCHANTMENTS = {
   [EquipmentSlot.Head]: [

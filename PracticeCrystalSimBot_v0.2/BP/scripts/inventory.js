@@ -4,7 +4,7 @@ import {
   RESPAWN_ANCHOR_ID, GLOWSTONE_ID, ENDER_PEARL_ID, AIR_ID,
   SWORD_STATS, PICKAXE_STATS, BOT_ARMOR, BOT_ARMOR_ENCHANTMENTS,
   BOT_SWORD_ENCHANTMENTS, BOT_CROSSBOW_ENCHANTMENTS, BOT_BOW_ENCHANTMENTS,
-  BOT_PICKAXE_ENCHANTMENTS, BOT_ELYTRA_ENCHANTMENTS, PATCH_MANAGED_STACK_ITEM_IDS,
+  BOT_PICKAXE_ENCHANTMENTS, BOT_ELYTRA_ENCHANTMENTS, MACE_ID, BOT_MACE_ENCHANTMENTS, PATCH_MANAGED_STACK_ITEM_IDS,
   PATCH_DEFAULT_COMBAT_ITEM_COUNTS, PATCH_VISUAL_SLOT_BY_EQUIPMENT,
   PATCH_VISUAL_EQUIPMENT_SELECTOR_RADIUS, PATCH_VISUAL_EQUIPMENT_RESYNC_TICKS,
   PATCH_TOTEM_POP_HEALTH_THRESHOLD, PATCH_TOTEM_POP_HEALTH_RATIO,
@@ -197,15 +197,11 @@ export function patchCalculateExpectedHealthDamage(entity, rawDamage, damageCaus
   return Math.max(0, netDamage - patchGetEstimatedAbsorptionValue(entity));
 }
 
-export function patchCalculateRawDamageForBotNetResult(bot, netDamage, damageCause) {
-  const numericNet = Math.max(0, Number(netDamage ?? 0));
-  if (numericNet <= 0.01) return 0;
-  const probeDamage = Math.max(1, numericNet);
-  const mitigated = patchCalculateNetDamage(bot, probeDamage, damageCause);
-  const damageRatio = Math.max(0, Math.min(1, mitigated / probeDamage));
-  if (damageRatio <= 0.01) return 0;
-  return numericNet / damageRatio;
-}
+// [A-1] patchCalculateRawDamageForBotNetResult は削除された。
+// 旧 top-up 機構（期待値へのダメージ改竀）専用の逆算関数であり、
+// ダメージ適用をエンジンへ完全委任した本実装では不要である。
+// patchCalculateNetDamage / patchCalculateExpectedHealthDamage は
+// AI判断（候補スコアリング・自傷回避・トーテム予測）専用として存続する（A-6）。
 
 // ── Visual Equipment ──
 function patchGetVisualEquipmentState(bot) {
@@ -825,6 +821,10 @@ export function seedBotLoadout(bot) {
     applyEnchantments(new ItemStack("minecraft:netherite_pickaxe", 1), BOT_PICKAXE_ENCHANTMENTS, true),
     applyEnchantments(new ItemStack("minecraft:bow", 1), BOT_BOW_ENCHANTMENTS, true),
     applyEnchantments(new ItemStack("minecraft:elytra", 1), BOT_ELYTRA_ENCHANTMENTS, true),
+    // [v0.5.0] メイス (エリトラ落下攻撃コンボ用。Wind Burst III — ヒット時に突風で跳ね上がり連撃可。
+    //   density/breach/wind_burst は相互排他のため1本に1種。火力特化は density V、
+    //   フル装備相手には breach IV に差し替え)
+    applyEnchantments(new ItemStack(MACE_ID, 1), BOT_MACE_ENCHANTMENTS, true),
     new ItemStack("minecraft:firework_rocket", 64),
   ];
   for (const item of starterItems) patchPlaceItemInContainer(inventory, item);

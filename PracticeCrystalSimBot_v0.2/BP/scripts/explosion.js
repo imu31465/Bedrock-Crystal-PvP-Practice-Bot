@@ -1,28 +1,20 @@
 import {
   system, BlockPermutation,
   AIR_ID, FIRE_ID, RESPAWN_ANCHOR_ID, CRYSTAL_POWER, ANCHOR_POWER,
-  CRYSTAL_DAMAGE_SCORE_RADIUS, ANCHOR_DAMAGE_SCORE_RADIUS,
   PATCH_ANCHOR_NATIVE_BREAK_CHECK_RADIUS, PATCH_ANCHOR_NATIVE_BREAK_MIN_CHANGED_BLOCKS,
   PATCH_ANCHOR_FORCE_FALLBACK, PATCH_ANCHOR_BLOCK_BREAK_RADIUS, PATCH_ANCHOR_FIRE_PLACE_CHANCE,
   PATCH_CRYSTAL_BLOCK_BREAK_RADIUS, PATCH_CRYSTAL_NATIVE_BREAK_CHECK_RADIUS,
   PATCH_CRYSTAL_NATIVE_BREAK_MIN_CHANGED_BLOCKS, PATCH_CRYSTAL_FORCE_FALLBACK_BREAK,
-  PATCH_EXPLOSION_PRESERVE_IDS, BOT_TYPE,
+  PATCH_EXPLOSION_PRESERVE_IDS, WATER_ID,
   getExplosionRayDirections, getAnchorBreakOffsetsCachePool,
 } from "./constants.js";
-import { patchMobGriefingEnabled, setPatchMobGriefingEnabled, globalTick } from "./state.js";
+import { patchMobGriefingEnabled, setPatchMobGriefingEnabled } from "./state.js";
 import {
-  getBlock, isAirBlock, isSolidBlock, addVector, quoteCoord, floorLocation,
-  isEntityUsable, isRespawnAnchorBlock, resolveRespawnAnchorPermutation,
-  getExplosionLocation, distance, distanceSquared,
-  patchGetCurrentHealthValue, getBotUid, getPlayersInDimension,
-  runDimensionCommand, patchRunDimensionCommandNoThrow,
-  getAllBots, setHealthValue,
+  getBlock, isAirBlock, isSolidBlock, quoteCoord,
+  isRespawnAnchorBlock, resolveRespawnAnchorPermutation,
+  getExplosionLocation,
+  runDimensionCommand,
 } from "./utils.js";
-import {
-  patchCalculateExpectedHealthDamage,
-  patchCalculateRawDamageForBotNetResult,
-} from "./inventory.js";
-import { isSimBot } from "./sim_port.js";
 
 // ── Utility ──
 function patchDelayTicks(ticks = 1) {
@@ -67,73 +59,16 @@ export async function setRespawnAnchorChargeWithFallback(dimension, location, ch
   try { await runDimensionCommand(dimension, command); return true; } catch { return false; }
 }
 
-// ── Damage Snapshots ──
-function patchShouldTrackExplosionVictim(entity, explosionLocation, maxDistanceSquared) {
-  if (!entity?.id) return false;
-  if (patchGetCurrentHealthValue(entity) <= 0.01) return false;
-  if (distanceSquared(entity.location, explosionLocation) > maxDistanceSquared) return false;
-  if (entity.typeId === BOT_TYPE || isSimBot(entity)) return isEntityUsable(entity, BOT_TYPE);
-  if (entity.typeId !== "minecraft:player") return false;
-  try {
-    const gameMode = entity.getGameMode?.();
-    if (gameMode && gameMode !== "survival" && gameMode !== "adventure") return false;
-  } catch {}
-  return true;
-}
-
-export function patchCaptureExplosionDamageSnapshots(dimension, explosionLocation, comboType = "crystal") {
-  const radius = comboType === "anchor" ? ANCHOR_DAMAGE_SCORE_RADIUS : CRYSTAL_DAMAGE_SCORE_RADIUS;
-  const maxDistanceSquared = Math.pow(radius + 1.5, 2);
-  const damageCause = patchGetDamageCauseForComboType(comboType);
-  const damageMultiplier = comboType === "anchor" ? 2.5 : 1.5;
-  const snapshots = [];
-  const seen = new Set();
-  const addEntity = (entity) => {
-    if (!patchShouldTrackExplosionVictim(entity, explosionLocation, maxDistanceSquared) || seen.has(entity.id)) return;
-    const rawDamage = estimateExplosionDamageScore(entity, explosionLocation, radius, comboType);
-    if (rawDamage <= 0.05) return;
-    seen.add(entity.id);
-    snapshots.push({
-      entity,
-      beforeHealth: patchGetCurrentHealthValue(entity),
-      rawDamage,
-      expectedNetDamage: patchCalculateExpectedHealthDamage(entity, rawDamage * damageMultiplier, damageCause),
-    });
-  };
-  for (const player of getPlayersInDimension(dimension)) addEntity(player);
-  for (const bot of getAllBots()) { if (bot.dimension.id === dimension.id) addEntity(bot); }
-  return snapshots;
-}
+// ── [A-1/A-2] Damage top-up 機構の全廃 ──
+// 旧実装の patchCaptureExplosionDamageSnapshots / patchScheduleExplosionDamageTopUp /
+// patchCalculateRawDamageForBotNetResult は、独自モデルの期待値と実ダメージの差額を
+// applyDamage / setHealthValue で強制適用する「ダメージ改竅」だった。
+// 本修正で全廃し、起爆パス（crystal_explode イベント or createExplosion）＝Bedrock
+// エンジンの実爆発のみを信頼する。防具・エンチャント・難易度・無敵フレーム・
+// ノックバックの全パイプラインが実プレイヤーと同一に機能する。
 
 export function patchGetDamageCauseForComboType(comboType = "crystal") {
   return comboType === "anchor" ? "blockExplosion" : "entityExplosion";
-}
-
-export function patchScheduleExplosionDamageTopUp(snapshots, comboType, source) {
-  if (!Array.isArray(snapshots) || !snapshots.length) return;
-  const damageCause = patchGetDamageCauseForComboType(comboType);
-  const damageMultiplier = comboType === "anchor" ? 2.5 : 1.5;
-  system.runTimeout(() => {
-    for (const snapshot of snapshots) {
-      const entity = snapshot.entity;
-      if (!entity?.id) continue;
-      if (entity.typeId === BOT_TYPE || isSimBot(entity)) { if (!isEntityUsable(entity, BOT_TYPE)) continue; }
-      else if (patchGetCurrentHealthValue(entity) <= 0.01) continue;
-      const currentHealth = patchGetCurrentHealthValue(entity);
-      const actualDamage = Math.max(0, Number(snapshot.beforeHealth ?? 0) - currentHealth);
-      const expectedNetDamage = Number(snapshot.expectedNetDamage ?? patchCalculateExpectedHealthDamage(entity, snapshot.rawDamage * damageMultiplier, damageCause));
-      if ((entity.typeId === BOT_TYPE || isSimBot(entity)) && actualDamage > expectedNetDamage + 0.2) {
-        setHealthValue(entity, Math.max(0.01, Number(snapshot.beforeHealth ?? currentHealth) - expectedNetDamage));
-        continue;
-      }
-      const missingNetDamage = Number((expectedNetDamage - actualDamage).toFixed(2));
-      if (missingNetDamage <= 0.2) continue;
-      const appliedDamage = (entity.typeId === BOT_TYPE || isSimBot(entity))
-        ? patchCalculateRawDamageForBotNetResult(entity, missingNetDamage, damageCause)
-        : missingNetDamage;
-      patchApplyDamageWithFallback(entity, appliedDamage, damageCause, source);
-    }
-  }, 1);
 }
 
 export function patchApplyDamageWithFallback(entity, damage, damageCause, source) {
@@ -150,13 +85,77 @@ export function patchApplyDamageWithFallback(entity, damage, damageCause, source
   return false;
 }
 
-// ── Explosion Damage Score ──
-export function estimateExplosionDamageScore(entity, explosionLocation, radius, comboType) {
-  const dist = distance(entity.location, explosionLocation);
-  if (dist > radius) return 0;
-  const normalized = 1 - dist / radius;
-  const baseDamage = normalized * normalized * (comboType === "anchor" ? 90 : 65);
-  return Math.max(0, baseDamage);
+// ── [A-6/F-2/B-6] AI判断専用の爆発ダメージ推定 ──
+// Wiki「Explosion」準拠: 影響半径 = 2P、距離は当たり判定の最近点(B-6)、
+// impact = (1 - dist/2P) × exposure、raw = 7P(impact² + impact) + 1。
+// 防具軽減は combat.js の patchCalculateExpectedHealthDamage（判断専用）で行う。
+// 出力はスコアリングと自傷回避のみに使われ、HP への反映は一切行わない。
+
+// [B-6] 爆発中心からエンティティ当たり判定(幅0.6×高1.8)の最近点への距離
+export function distanceToEntityBox(entity, point) {
+  const loc = entity.location;
+  const halfW = 0.3, height = 1.8;
+  const dx = Math.max(Math.abs(point.x - loc.x) - halfW, 0);
+  const dz = Math.max(Math.abs(point.z - loc.z) - halfW, 0);
+  const dy = Math.max(point.y - (loc.y + height), loc.y - point.y, 0);
+  return Math.hypot(dx, dy, dz);
+}
+
+// 簡易 exposure: 当たり判定上の7点サンプルへの可視率（Javaはレイサンプリング）
+function estimateExposure(entity, explosionLocation, dimension) {
+  const loc = entity.location;
+  const samples = [
+    { x: loc.x, y: loc.y + 0.9, z: loc.z },
+    { x: loc.x, y: loc.y + 0.15, z: loc.z },
+    { x: loc.x, y: loc.y + 1.65, z: loc.z },
+    { x: loc.x + 0.28, y: loc.y + 0.9, z: loc.z },
+    { x: loc.x - 0.28, y: loc.y + 0.9, z: loc.z },
+    { x: loc.x, y: loc.y + 0.9, z: loc.z + 0.28 },
+    { x: loc.x, y: loc.y + 0.9, z: loc.z - 0.28 },
+  ];
+  let visible = 0;
+  for (const sample of samples) {
+    if (hasClearLine(dimension, explosionLocation, sample)) visible++;
+  }
+  return visible / samples.length;
+}
+
+function hasClearLine(dimension, from, to) {
+  const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist <= 0.01) return true;
+  const step = 0.45;
+  const ux = dx / dist, uy = dy / dist, uz = dz / dist;
+  for (let t = step; t < dist; t += step) {
+    if (isSolidBlock(getBlock(dimension, { x: from.x + ux * t, y: from.y + uy * t, z: from.z + uz * t }))) return false;
+  }
+  return true;
+}
+
+// [F-2] Bedrockでは水中の爆発は無ダメージ (Mojira MCPE-21611, 2023年「仕様通り」裁定)。
+// 爆発中心または被弾者が水中なら推定0（AIが無駄弾を置かないための判断専用）。
+function isWaterBlockAt(dimension, location) {
+  const block = getBlock(dimension, location);
+  if (!block) return false;
+  if (block.typeId === WATER_ID || block.typeId === "minecraft:flowing_water") return true;
+  try { if (block.isLiquid && String(block.typeId).includes("water")) return true; } catch {}
+  return false;
+}
+
+export function estimateExplosionDamage(entity, explosionLocation, comboType) {
+  if (!entity || !entity.location) return 0;
+  const dimension = entity.dimension;
+  // [F-2] 水中判定（どちらかが水中なら期待ダメージ0）
+  if (isWaterBlockAt(dimension, explosionLocation)) return 0;
+  if (isWaterBlockAt(dimension, entity.location) ||
+      isWaterBlockAt(dimension, { x: entity.location.x, y: entity.location.y + 1.0, z: entity.location.z })) return 0;
+  const P = comboType === "anchor" || comboType === "bed" ? ANCHOR_POWER : CRYSTAL_POWER;
+  const radius = 2 * P; // 実影響半径 = 2P
+  const dist = distanceToEntityBox(entity, explosionLocation);
+  if (dist >= radius) return 0;
+  const exposure = estimateExposure(entity, explosionLocation, dimension);
+  const impact = Math.max(0, 1 - dist / radius) * exposure;
+  return 7 * P * (impact * impact + impact) + 1;
 }
 
 // ── Block Break Patterns ──
@@ -308,7 +307,7 @@ function patchCreateExplosionWithFallback(dimension, location, power, options = 
 // ── Anchor Explosion ──
 export async function runAnchorExplosionWithFallback(dimension, baseLocation, source, options = {}) {
   const anchorLocation = getExplosionLocation(baseLocation, "anchor");
-  const damageSnapshots = patchCaptureExplosionDamageSnapshots(dimension, anchorLocation, "anchor");
+  // [A-1] damageSnapshots / top-up は全廃。起爆は実エンジン爆発のみ。
   let explosionResult = { success: true }, changedBlocks = 0, usedFallback = false;
   if (PATCH_ANCHOR_FORCE_FALLBACK) {
     usedFallback = true;
@@ -326,7 +325,6 @@ export async function runAnchorExplosionWithFallback(dimension, baseLocation, so
     if (changedBlocks < required) { usedFallback = true; await patchBreakBlocksInAnchorPattern(dimension, baseLocation, expectedAffectedBlocks); }
   }
   if (options?.debugMessage && typeof options.debugMessage === "function") options.debugMessage(changedBlocks, usedFallback, explosionResult);
-  patchScheduleExplosionDamageTopUp(damageSnapshots, "anchor", source);
   return { changedBlocks, usedFallback, explosionResult };
 }
 
@@ -387,11 +385,10 @@ async function patchDetonateCrystalExplosion(dimension, location, source, crysta
 
 export async function runCrystalExplosionWithFallback(dimension, baseLocation, source, crystalEntity) {
   const crystalLocation = getExplosionLocation(baseLocation, "crystal");
-  const damageSnapshots = patchCaptureExplosionDamageSnapshots(dimension, crystalLocation, "crystal");
+  // [A-1] damageSnapshots / top-up は全廃。起爆は実エンジン爆発のみ。
   const nativeBreakSnapshot = patchCaptureExplosionSnapshot(dimension, crystalLocation, PATCH_CRYSTAL_NATIVE_BREAK_CHECK_RADIUS);
   await patchEnsureMobGriefingEnabled(dimension);
   const explosionResult = await patchDetonateCrystalExplosion(dimension, crystalLocation, source, crystalEntity);
-  patchScheduleExplosionDamageTopUp(damageSnapshots, "crystal", source);
   await patchDelayTicks(1);
   const changedBlocks = patchCountExplosionSnapshotChanges(dimension, nativeBreakSnapshot);
   let usedFallback = false, brokenBlocks = 0;
@@ -400,4 +397,73 @@ export async function runCrystalExplosionWithFallback(dimension, baseLocation, s
     brokenBlocks = await patchBreakBlocksInCrystalPattern(dimension, baseLocation);
   }
   return { brokenBlocks, changedBlocks, crystalLocation, explosionResult, usedFallback };
+}
+
+// ── [B-5] Bed Bomb Explosion (ネザー/ジ・エンド限定) ──
+// ベッドはオーバーワールド外で「使う」と P=5 の実エンジン爆発を起こす（アンカーと同威力）。
+// 1) ベッドブロックを setblock で設置（2ブロック占有: foot + head）
+// 2) 起爆は優先的に実操作（SimulatedPlayer のインタラクト）で行い、
+//    不可能な環境では dimension.createExplosion(P=5) ＝ 実エンジン爆発にフォールバックする。
+//    いずれの経路もダメージは Bedrock エンジンの計算のみ（A-1 原則）。
+const BED_DIRECTIONS = [
+  { dir: 0, dx: 0, dz: 1 },   // South
+  { dir: 1, dx: -1, dz: 0 },  // West
+  { dir: 2, dx: 0, dz: -1 },  // North
+  { dir: 3, dx: 1, dz: 0 },   // East
+];
+
+export async function placeBedWithFallback(dimension, footLocation, sourceEntity) {
+  // 設置方向: Botから見て奥へ伸ばす（head が対象側）
+  let facing = BED_DIRECTIONS[0];
+  try {
+    if (sourceEntity?.location) {
+      const dx = footLocation.x + 0.5 - sourceEntity.location.x;
+      const dz = footLocation.z + 0.5 - sourceEntity.location.z;
+      if (Math.abs(dz) >= Math.abs(dx)) facing = dz >= 0 ? BED_DIRECTIONS[0] : BED_DIRECTIONS[2];
+      else facing = dx >= 0 ? BED_DIRECTIONS[3] : BED_DIRECTIONS[1];
+    }
+  } catch {}
+  const head = { x: footLocation.x + facing.dx, y: footLocation.y, z: footLocation.z + facing.dz };
+  const footBlock = getBlock(dimension, footLocation);
+  const headBlock = getBlock(dimension, head);
+  if (!footBlock || !isAirBlock(footBlock) || !headBlock || !isAirBlock(headBlock)) return false;
+  // Bedrock のベッドブロック: minecraft:bed + direction/head_bit ステート
+  try {
+    dimension.getBlock(footLocation).setPermutation(BlockPermutation.resolve("minecraft:bed", { direction: facing.dir, head_bit: false }));
+    dimension.getBlock(head).setPermutation(BlockPermutation.resolve("minecraft:bed", { direction: facing.dir, head_bit: true }));
+    return true;
+  } catch {}
+  // コマンドフォールバック
+  const cmd = (loc, headBit) =>
+    `setblock ${quoteCoord(loc.x)} ${quoteCoord(loc.y)} ${quoteCoord(loc.z)} minecraft:bed ["direction"=${facing.dir},"head_bit"=${headBit ? "true" : "false"}] replace`;
+  try {
+    await runDimensionCommand(dimension, cmd(footLocation, false));
+    await runDimensionCommand(dimension, cmd(head, true));
+    return true;
+  } catch { return false; }
+}
+
+export async function runBedExplosionWithFallback(dimension, footLocation, source, sourceEntity) {
+  // (1) 実操作による起爆（本物のベッド爆発: 火・ブロック破壊・ダメージすべてエンジン側）
+  if (sourceEntity && typeof sourceEntity.simulateInteract === "function") {
+    try {
+      // ベッドの方を向いてインタラクト
+      sourceEntity.simulateInteract();
+      await patchDelayTicks(2);
+      // ベッドが消えていれば実爆発が起きた
+      const foot = getBlock(dimension, footLocation);
+      if (!foot || foot.typeId !== "minecraft:bed") {
+        return { success: true, mode: "interact" };
+      }
+    } catch {}
+  }
+  // (2) フォールバック: 実API爆発 (P=5 = ベッドと同威力、ダメージはエンジン計算)
+  const center = { x: footLocation.x + 0.5, y: footLocation.y + 0.6, z: footLocation.z + 0.5 };
+  const explosionResult = patchCreateExplosionWithFallback(dimension, center, ANCHOR_POWER, { breaksBlocks: true, causesFire: false, source });
+  // ベッド残骸を掃除（実爆発と同じ扱い）
+  try {
+    const foot = getBlock(dimension, footLocation);
+    if (foot?.typeId === "minecraft:bed") foot.setPermutation(BlockPermutation.resolve(AIR_ID));
+  } catch {}
+  return { success: explosionResult.success, mode: "api", error: explosionResult.error };
 }

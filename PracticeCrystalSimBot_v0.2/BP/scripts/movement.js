@@ -46,9 +46,10 @@ import {
 } from "./navigation.js";
 import {
   evaluateCombatTactic, tacticTryPillarUp, tacticTryBridgeToward,
+  tryCrystalSurf, tryAnchorJump,
   tacticIsDangerousLedge, tacticPlaceBlockAt,
   TACTIC_ENGAGE, TACTIC_CLOSE_GAP, TACTIC_CLIMB, TACTIC_DESCEND,
-  TACTIC_KITE, TACTIC_HIGH_GROUND, TACTIC_HOLD,
+  TACTIC_KITE, TACTIC_LOW_GROUND, TACTIC_HOLD,
 } from "./tactics.js";
 
 // ── Golden Apple Effects ──
@@ -835,9 +836,19 @@ function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirec
 
   // 段階5: 柱/橋で地形を作る
   if (stuckTicks < STUCK_STAGE_TELEPORT_TICKS) {
-    if (tactic?.mode === TACTIC_CLIMB && tacticTryPillarUp(bot, config, target)) {
+    // [B-7] 相手との水平距離が爆発リーチ内なら柱を立てて追わない（足元起爆が正解）。
+    // 旧実装は「相手が上なら柱で追う」で、最も狙われる自滅ポジション（相手の真下で
+    // 浮いた状態）に自ら上がっていく実戦メタと逆の挙動だった。
+    const horizontalToTarget = target ? Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z) : Infinity;
+    const pillarAllowed = !target || horizontalToTarget > 4.5;
+    if (pillarAllowed && tactic?.mode === TACTIC_CLIMB && tacticTryPillarUp(bot, config, target)) {
       moveTryJump(bot, runtime, config);
       return { handled: true };
+    }
+    // [C-3] アンカージャンプ: 積み上が詰まった時の縦ブースト（ネザー以外・自傷推定OK）
+    if (!pillarAllowed && tactic?.mode === TACTIC_CLIMB && stuckTicks >= STUCK_STAGE_JIGGLE_TICKS &&
+        config.crystalSurf !== false) {
+      try { void tryAnchorJump(bot, config); } catch {}
     }
     if (tacticTryBridgeToward(bot, config, forwardDirection)) return { handled: true };
     if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) return { handled: true };
@@ -1017,11 +1028,20 @@ export function handleMovement(bot, target, config) {
     }
   }
 
+  // ── [C-2] クリスタルサーフィン（回復中の高速離脱）──
+  // 実戦の移動技術: 自爆のノックバックで逃げる。ダメージはエンジン計算そのまま。
+  if (tactic.mode === TACTIC_KITE && !inWater && onGround && config.crystalSurf !== false) {
+    try { void tryCrystalSurf(bot, config, forwardDirection); } catch {}
+  }
+
   // ── 登れない壁 → 柱を立てて登る ──
-  // 既にターゲットの真下にいる場合はスタック判定を待たずに即座に積む。
-  const horizontalToTarget = Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z);
-  const isDirectlyBelowTarget = horizontalToTarget <= 1.8;
-  if (tactic.mode === TACTIC_CLIMB && onGround &&
+  // [B-7] 旧実装は「ターゲットの真下にいるほど即座に柱を積む」だったが、これは
+  // 実戦メタ（低位有利）と真逆の自滅行動。射程内では交戦を優先し、柱は射程外の
+  // 遠方の高所への到達手段としてのみ許可する。
+  const horizontalToTarget2 = Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z);
+  const isDirectlyBelowTarget = horizontalToTarget2 <= 1.8;
+  const pillarReachable = horizontalToTarget2 > 4.5; // 爆発干渉距離 (F-4) 外のみ柱を許可
+  if (tactic.mode === TACTIC_CLIMB && onGround && pillarReachable &&
       target.location.y - bot.location.y >= 2.2 &&
       (!runtime.navPath || !runtime.navPath.length) &&
       (isDirectlyBelowTarget || stuckTicks >= STUCK_STAGE_JIGGLE_TICKS)) {
