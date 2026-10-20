@@ -15,6 +15,7 @@ import {
   setDebugLogBuffer, setDebugLogDirty,
 } from "./state.js";
 import { normalizeGlobalSettings } from "./config.js";
+import { isSimBot, getAllSimBots } from "./sim_port.js";
 
 // ── Vector Math ──
 export function distance(a, b) {
@@ -108,7 +109,9 @@ export function patchSnapToBlockCenter(location) {
 
 // ── Player & Entity Helpers ──
 export function getAllPlayers() {
-  try { return world.getAllPlayers(); } catch { return []; }
+  // SimulatedPlayer(Bot)は"プレイヤー"として扱わない: ターゲット検索・占位判定・紹介メッセージ等の
+  // 旧挙動(カスタムエンティティBot)と一致させるため除外する。
+  try { return world.getAllPlayers().filter(p => !isSimBot(p)); } catch { return []; }
 }
 export function getPlayerByName(name) {
   return getAllPlayers().find(p => p.name === name);
@@ -124,7 +127,7 @@ export function isLocationOccupiedByPlayer(dimension, location) {
 export function isEntityUsable(entity, typeId) {
   try {
     if (!entity?.id) return false;
-    if (typeId && entity.typeId !== typeId) return false;
+    if (typeId && entity.typeId !== typeId && !isSimBot(entity)) return false;
     const _ = entity.location;
     return true;
   } catch { return false; }
@@ -143,17 +146,16 @@ export function getBotUid(entity) {
       if (tag.startsWith(BOT_UID_TAG_PREFIX)) return tag.slice(BOT_UID_TAG_PREFIX.length);
     }
   } catch {}
+  // Sim はタグが使えない環境でも毎tick新規uid生成を防ぐため名前で安定識別
+  if (isSimBot(entity)) {
+    try { return `sim_${entity.name}`; } catch { return ""; }
+  }
   return "";
 }
 export function getAllBots() {
   const bots = [];
-  for (const dim of ["minecraft:overworld", "minecraft:nether", "minecraft:the_end"]) {
-    try {
-      const d = world.getDimension(dim);
-      for (const e of d.getEntities({ type: BOT_TYPE })) {
-        if (isEntityUsable(e, BOT_TYPE)) bots.push(e);
-      }
-    } catch {}
+  for (const sim of getAllSimBots()) {
+    try { if (sim.location) bots.push(sim); } catch {}
   }
   return bots;
 }
@@ -564,7 +566,7 @@ export function loadDebugLogBuffer() {
 }
 export function dumpPersistentDebugLog(player) {
   if (!debugLogBuffer.length) { player.sendMessage("§7[PvPBot] ログは空です。"); return; }
-  for (const entry of debugLogBuffer.slice(-20)) {
+  for (const entry of debugLogBuffer.slice(-60)) {
     player.sendMessage(`§7[t${entry.tick}][${entry.category}] ${entry.message}`);
   }
 }
@@ -664,6 +666,40 @@ export function getBotVelocity(bot) {
 // 目標水平速度になるよう「差分だけ」impulseを与える。
 // これによりターゲット速度を上限に滑らかに移動し、加速の暴走や振動が起きない。
 export function applyHorizontalSteering(bot, desiredVelocity, options = {}) {
+  if (isSimBot(bot)) {
+    try {
+      const desiredSpeed = Math.hypot(desiredVelocity.x, desiredVelocity.z);
+      if (desiredSpeed < 0.02) {
+        try { bot.stopMoving?.(); } catch {}
+        return false;
+      }
+      let yaw = 0;
+      try { yaw = Number(bot.getRotation?.()?.y ?? 0); } catch {}
+      const yawRad = (yaw * Math.PI) / 180;
+      const fx = -Math.sin(yawRad);
+      const fz = Math.cos(yawRad);
+      const sx = -fz;
+      const sz = fx;
+      const dirX = desiredVelocity.x / desiredSpeed;
+      const dirZ = desiredVelocity.z / desiredSpeed;
+      const forwardInput = dirX * fx + dirZ * fz;
+      const strafeInput = dirX * sx + dirZ * sz;
+      const speed = Math.max(0.3, Math.min(1, desiredSpeed / 0.216));
+      try {
+        const probeKey = bot.name ?? bot.id ?? "?";
+        const probeCtl = (applyHorizontalSteering.__probe ??= new Map());
+        const n = Number(probeCtl.get(probeKey) ?? 0) + 1;
+        probeCtl.set(probeKey, n);
+        if (n % 40 === 0) {
+          appendPersistentDebugLog("steer", `${probeKey}: sim t=${globalTick} yaw=${yaw.toFixed(0)} fwd=${forwardInput.toFixed(2)} str=${strafeInput.toFixed(2)} spd=${speed.toFixed(2)} dIn=${desiredSpeed.toFixed(2)} loc=${Number(bot.location?.x ?? 0).toFixed(1)},${Number(bot.location?.y ?? 0).toFixed(1)},${Number(bot.location?.z ?? 0).toFixed(1)}`);
+        }
+      } catch {}
+      bot.moveRelative(strafeInput, forwardInput, speed);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const maxAccel = Number(options.maxAccel ?? 0.16);
   const verticalImpulse = Number(options.verticalImpulse ?? 0);
   const current = getBotVelocity(bot);

@@ -28,7 +28,7 @@ import {
 import {
   loadConfigs, loadGlobalSettings, getRuntime, materializeConfig,
   persistBotConfig, patchApplyDifficultyPreset, getDefaultBotDisplayName,
-  normalizeGlobalSettings,
+  normalizeGlobalSettings, saveConfigs,
 } from "./config.js";
 import {
   ensureBotInitialized, ensureBotEquipmentIntegrity,
@@ -38,12 +38,16 @@ import {
 } from "./inventory.js";
 import {
   handleSwordCombo, handleCrystalCombo, handleAnchorCombo,
-  chooseBestExplosiveAction,
+  chooseBestExplosiveAction, handleSimThreatDefense, handleSimCrossbowAttack, handleSimShieldGuard, handleAxeShieldBreak,
+  handleBowAttack, handleElytraMaceDive, handleBedCombo, noteTargetHurt,
 } from "./combat.js";
+import { trySurroundTarget } from "./tactics.js";
+import { registerChainSpeedTracking, sendChainStats } from "./chain_speed.js";
 import {
   handleMovement, handlePearlMove, handleGoldenAppleBuff,
   enforceBotBoundary,
 } from "./movement.js";
+import { isSimBot, scheduleDespawn } from "./sim_port.js";
 import {
   openRootMenu, openSettingsForm, spawnBotForPlayer, spawnBotWithPreset,
   removeOwnedBots, createPlayerCommandHandler,
@@ -59,10 +63,34 @@ function tickBots() {
   for (const bot of allBots) {
     if (!isEntityUsable(bot, BOT_TYPE)) continue;
 
+    // Sim死亡検出: entityDieがSimに発火しない環境向けのフェイルセーフ
+    const hp = patchGetCurrentHealthValue(bot);
+    if (Number.isFinite(hp) && hp <= 0) {
+      const deadUid = getBotUid(bot);
+      if (deadUid) {
+        broadcastDeathMessage(bot);
+        delete botConfigs[deadUid];
+        runtimeState.delete(deadUid);
+        trackedBotIdByUid.delete(deadUid);
+        try { trackedBotMetaById.delete(bot.id); } catch {}
+      }
+      untrackBot(bot);
+      try { saveConfigs(); } catch {}
+      try { scheduleDespawn(bot); } catch {}
+      continue;
+    }
+
     const config = ensureBotInitialized(bot);
     if (!config) continue;
     const uid = config.uid;
     const runtime = getRuntime(uid);
+
+    try {
+      if (globalTick % 30 === (Number(bot.id ?? 0) % 30)) {
+        const probeInside = isLocationInsideBotBoundary(bot.location);
+        appendPersistentDebugLog("probe", `${config.displayName}: sim=${isSimBot(bot)} en=${config.enabled} cfg=${runtime.isConfiguring} prot=${isSpawnProtected(uid)} inside=${probeInside} tInterval=${config.tickInterval} loc=${Number(bot.location?.x ?? 0).toFixed(1)},${Number(bot.location?.y ?? 0).toFixed(1)},${Number(bot.location?.z ?? 0).toFixed(1)}`);
+      }
+    } catch {}
 
     // Skip if tickInterval says so
     if (config.tickInterval > 1 && globalTick % config.tickInterval !== 0) continue;
@@ -138,22 +166,44 @@ function tickBots() {
       ensureBotEquipmentIntegrity(bot, config);
     }
 
-    // Movement
-    handleMovement(bot, target, config);
+    // Movement (エリトラ滑空中は移動エンジンを止める)
+    if (!getRuntime(config.uid).elytraDashState?.active) handleMovement(bot, target, config);
 
     // Pearl move
     handlePearlMove(bot, target, config);
 
+    // Defense (inbound projectiles / hostile explosives)
+    void handleSimThreatDefense(bot, target, config);
+
+    // Shield Guard (raise against the enemy's crystal)
+    void handleSimShieldGuard(bot, target, config);
+
     // Combat
-    const explosiveAction = chooseBestExplosiveAction(bot, target, config);
+    const guardActive = Boolean(getRuntime(config.uid).shieldGuardState?.active);
+    const explosiveAction = guardActive ? undefined : chooseBestExplosiveAction(bot, target, config);
     if (explosiveAction) {
       if (explosiveAction.type === "anchor") {
         handleAnchorCombo(bot, target, config, explosiveAction.candidate);
+      } else if (explosiveAction.type === "bed") {
+        // [B-5] ベッド爆弾（ネザー/ジ・エンド限定）
+        handleBedCombo(bot, target, config, explosiveAction.candidate);
       } else {
         handleCrystalCombo(bot, target, config, explosiveAction.candidate);
       }
+      // 武器bash may also be executed during explosive turns (simultaneous attack — suppress the weapon attack of the dice roll lineage)
+      handleSwordCombo(bot, target, config);
+    } else if (!guardActive) {
+      // [B-3] サラウンド: 相手が静止していれば囲んでから撃つ
+      trySurroundTarget(bot, target, config);
+      // 相手が盾を構えていたら斧で破解(5秒無効化 → クロスボウも再開)
+      handleAxeShieldBreak(bot, target, config);
+      // [v0.5.0] エリトラ+メイス急降下 (上空滞留を廃した再設計版)
+      handleElytraMaceDive(bot, target, config);
+      // 弓で射撃(距離が離れている時)
+      handleBowAttack(bot, target, config);
+      handleSwordCombo(bot, target, config);
+      void handleSimCrossbowAttack(bot, target, config);
     }
-    handleSwordCombo(bot, target, config);
 
     // Visual sync
     patchSyncVisualEquipmentSlots(bot);
@@ -190,7 +240,7 @@ function onEntitySpawn(event) {
 
 function onEntityDie(event) {
   const entity = event.deadEntity;
-  if (entity?.typeId !== BOT_TYPE) return;
+  if (entity?.typeId !== BOT_TYPE && !isSimBot(entity)) return;
   const uid = getBotUid(entity);
   if (uid) {
     broadcastDeathMessage(entity);
@@ -205,7 +255,9 @@ function onEntityDie(event) {
 
 function onEntityHurt(event) {
   const entity = event.hurtEntity;
-  if (entity?.typeId !== BOT_TYPE || !isEntityUsable(entity, BOT_TYPE)) return;
+  // [B-4] 全エンティティの被弾tickを記録（i-frame明けジャスト起爆の判断用）
+  noteTargetHurt(entity);
+  if ((entity?.typeId !== BOT_TYPE && !isSimBot(entity)) || !isEntityUsable(entity, BOT_TYPE)) return;
   const uid = getBotUid(entity);
   const config = botConfigs[uid];
   if (!config) return;
@@ -227,13 +279,13 @@ function onEntityHurt(event) {
 
 function onEntityRemove(event) {
   const entity = event.removedEntity;
-  if (entity?.typeId !== BOT_TYPE) return;
+  if (entity?.typeId !== BOT_TYPE && !isSimBot(entity)) return;
   untrackBot(entity);
 }
 
 function onPlayerSpawn(event) {
   const player = event.player;
-  if (!player) return;
+  if (!player || isSimBot(player)) return;
   if (!introShown.has(player.name)) {
     introShown.add(player.name);
     try { player.sendMessage(getIntroMessage()); } catch {}
@@ -324,6 +376,11 @@ try {
         description: "保存されたデバッグログを消去します",
         handler: (player) => clearPersistentDebugLog(player),
       },
+      {
+        name: "pvpbot:chainstats",
+        description: "チェーン速度 (設置→起爆) の計測履歴を表示します [D-1]",
+        handler: (player) => sendChainStats(player),
+      },
     ];
     console.warn(`[PvPBot] Registering ${commands.length} commands...`);
     for (const command of commands) {
@@ -365,6 +422,7 @@ try {
 } catch {}
 try {
   world.afterEvents.playerSpawn.subscribe((event) => {
+    if (isSimBot(event.player)) return;
     system.runTimeout(() => {
       if (introShown.has(event.player.name)) return;
       introShown.add(event.player.name);
@@ -381,6 +439,8 @@ system.run(() => {
     loadDebugLogBuffer();
     loadConfigs();
     loadGlobalSettings();
+    // [D-1] チェーン速度計測の開始（黒曜石→クリスタル→起爆のms計測）
+    try { registerChainSpeedTracking(); } catch (error) { console.warn(`[PvPBot] chain tracking failed: ${formatError(error)}`); }
     logSystem("PvPBot startup complete");
 
     // Start main tick loop

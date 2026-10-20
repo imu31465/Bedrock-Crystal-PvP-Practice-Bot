@@ -18,7 +18,7 @@ import {
   shortId, formatLocation, summarizeNearbyPlayers, summarizeNearbyBots,
   describeBlockContext, updateTrackedBotMeta, logBotEvent,
   scheduleBotProbe, matchPendingSpawnRequest, getPlayerByName,
-  patchRunDimensionCommandNoThrow, quoteCoord,
+  patchRunDimensionCommandNoThrow, quoteCoord, trackBot,
 } from "./utils.js";
 import {
   getRuntime, materializeConfig, persistBotConfig, writeConfigTags,
@@ -33,24 +33,54 @@ import {
 } from "./inventory.js";
 import { botConfigs, runtimeState, trackedBotIdByUid, trackedBotMetaById } from "./state.js";
 import { EntityComponentTypes, EquipmentSlot } from "./constants.js";
+import {
+  spawnSimBotAt, getNextBotName, applyOwnerSkin, despawnSimBot,
+  resolveCommandPlayer, isSimBot,
+} from "./sim_port.js";
 
-// ── Bot Spawn ──
+// /./Ⅰ Sim Player Attachment /./Ⅰ
+// カスタムエンティティ直spawnからSimulatedPlayerロジックへの移植。
+// spawn直後に初期化・設定適用（旧 onEntitySpawn の処理を移植）。
+function attachSpawnedSimBot(sim, request) {
+  try {
+    let config = ensureBotInitialized(sim, request?.playerName ? { name: request.playerName } : undefined);
+    if (config) {
+      if (request?.presetName) {
+        const presetApplied = patchApplyDifficultyPreset(config, request.presetName);
+        const merged = { ...presetApplied, inventoryMode: request.inventoryMode ?? presetApplied.inventoryMode };
+        config = persistBotConfig(sim, merged);
+        try { sim.nameTag = config.displayName || getDefaultBotDisplayName(config.uid); } catch {}
+      }
+      trackBot(sim);
+      updateTrackedBotMeta(sim, { uid: config.uid });
+      logBotEvent(sim, `spawned sim preset=${request?.presetName ?? "none"}`);
+      if (request?.openSettingsAfterSpawn) {
+        const owner = request?.playerName ? world.getAllPlayers().find(p => p.name === request.playerName && !isSimBot(p)) : undefined;
+        if (owner) system.runTimeout(() => { try { void openSettingsForm(owner); } catch {} }, 10);
+      }
+    }
+  } catch (error) {
+    appendPersistentDebugLog("error", `attach failed: ${formatError(error)}`);
+  }
+}
+
+// /./Ⅰ Sim Bot Spawn /./Ⅰ
 export function spawnBotForPlayer(player) {
   const spawnLocation = getSpawnLocationNear(player);
-  pendingSpawnRequests.push({
-    playerName: player.name, location: spawnLocation,
-    dimensionId: player.dimension.id, createdTick: Date.now(),
-    openSettingsAfterSpawn: true,
-  });
   try {
-    player.dimension.spawnEntity(BOT_TYPE, spawnLocation);
+    const sim = spawnSimBotAt(spawnLocation, player.dimension, getNextBotName(), undefined);
+    applyOwnerSkin(sim, player);
+    attachSpawnedSimBot(sim, {
+      playerName: player.name,
+      openSettingsAfterSpawn: true,
+    });
   } catch (error) {
-    player.sendMessage(`§c[PvPBot] Bot の召喚に失敗: ${formatError(error)}`);
+    player.sendMessage(`§c[PvPBot] Bot の生成に失敗: ${formatError(error)}`);
     appendPersistentDebugLog("error", `spawnBotForPlayer failed: ${formatError(error)}`);
   }
 }
 
-// プリセット名を指定してBotを召喚する（インベントリはデフォルトで無限）
+// プレセット名を指定してBotを召喚する（インベントリはデフォルトで無限）
 export function spawnBotWithPreset(player, presetName) {
   const validPresets = ["easy", "normal", "hard"];
   const preset = presetName?.toLowerCase()?.trim();
@@ -59,22 +89,21 @@ export function spawnBotWithPreset(player, presetName) {
     return;
   }
   const spawnLocation = getSpawnLocationNear(player);
-  // openSettingsAfterSpawn=false、presetName を渡して spawn 後に設定を適用
-  pendingSpawnRequests.push({
-    playerName: player.name, location: spawnLocation,
-    dimensionId: player.dimension.id, createdTick: Date.now(),
-    openSettingsAfterSpawn: false,
-    presetName: preset,
-    inventoryMode: "infinite",
-  });
   try {
-    player.dimension.spawnEntity(BOT_TYPE, spawnLocation);
-    player.sendMessage(`§a[PvPBot] §f${preset} §aプリセットのBotを召喚しました。インベントリ: 無限`);
+    const sim = spawnSimBotAt(spawnLocation, player.dimension, getNextBotName(), undefined);
+    applyOwnerSkin(sim, player);
+    attachSpawnedSimBot(sim, {
+      playerName: player.name,
+      presetName: preset,
+      inventoryMode: "infinite",
+    });
+    player.sendMessage(`§a[PvPBot] 「${preset}」設定プリセットでBotを召喚しました。インベントリ: 無限`);
   } catch (error) {
-    player.sendMessage(`§c[PvPBot] Bot の召喚に失敗: ${formatError(error)}`);
+    player.sendMessage(`§c[PvPBot] Bot の生成に失敗: ${formatError(error)}`);
     appendPersistentDebugLog("error", `spawnBotWithPreset failed: ${formatError(error)}`);
   }
 }
+
 
 // ── Bot Remove ──
 export function removeOwnedBots(player) {
@@ -87,7 +116,7 @@ export function removeOwnedBots(player) {
     delete botConfigs[uid];
     runtimeState.delete(uid);
     trackedBotIdByUid.delete(uid);
-    try { bot.remove(); removed++; } catch {}
+    try { despawnSimBot(bot); removed++; } catch {}
   }
   saveConfigs();
   player.sendMessage(`§a${removed} 体の Bot を削除しました。`);
@@ -102,7 +131,7 @@ function removeSpecificBot(player, bot) {
   if (config.ownerName && config.ownerName !== player.name) { player.sendMessage(`§c${getBotLabel(bot)} は ${config.ownerName} の所有なので削除できません。`); return false; }
   delete botConfigs[uid]; runtimeState.delete(uid); trackedBotIdByUid.delete(uid);
   try { trackedBotMetaById.delete(bot.id); } catch {}
-  try { bot.remove(); } catch (error) { player.sendMessage(`§c[PvPBot] Bot の削除に失敗しました: ${formatError(error)}`); return false; }
+  try { despawnSimBot(bot); } catch (error) { player.sendMessage(`§c[PvPBot] Bot の削除に失敗しました: ${formatError(error)}`); return false; }
   saveConfigs();
   player.sendMessage(`§a${label} を削除しました。`);
   return true;
@@ -209,7 +238,7 @@ async function openBotSettingsModal(player, bot) {
     .slider("[基本] 採掘開始までのスタック時間 (0=即座, 120=6秒)", 0, 120, { valueStep: 10, defaultValue: config.mineStuckTicksThreshold ?? 40 })
     .toggle("[移動] 経路探索(A*)で賢く移動する", { defaultValue: config.pathfinding ?? true })
     .toggle("[移動] ブロックを置いて登る/橋を架ける", { defaultValue: config.blockPlacing ?? true })
-    .toggle("[移動] 高所を取ってから戦う", { defaultValue: config.highGroundTactic ?? true })
+    .toggle("[移動] 低位を取ってから戦う (ローグラウンド)", { defaultValue: config.highGroundTactic ?? true })
     .toggle("[移動] 完全に詰んだ時だけワープで脱出する", { defaultValue: config.escapeTeleport ?? true })
     .slider("[移動] 視線の追従速度 (小=人間らしい, 大=瞬時)", 6, 180, { valueStep: 2, defaultValue: config.lookTurnSpeed ?? 42 })
     .toggle("[アイテム] 自動トーテム補充", { defaultValue: config.autoTotem })
@@ -230,6 +259,17 @@ async function openBotSettingsModal(player, bot) {
     .slider("[戦闘] アンカーの起爆遅れ (0=即座, 10=0.5秒)", 0, 10, { valueStep: 1, defaultValue: config.anchorDetonateDelay })
     .toggle("[戦闘] アンカー破壊パターンをキャッシュ (ラグ軽減)", { defaultValue: config.anchorBreakCache ?? true })
     .toggle("[戦闘] 逃げ場がない時は反撃せず回復に専念する", { defaultValue: config.eatWhenCornered ?? true })
+    .toggle("[戦闘] クロスボウで射撃する (実弾・エンジン判定)", { defaultValue: config.crossbowCombo })
+    .toggle("[戦闘] 爆破ダメージ軽減 (遮蔽ブロックを設置する)", { defaultValue: config.blastMitigation })
+    .toggle("[戦闘] 盾ガード (投射物を防御)", { defaultValue: config.shieldGuard })
+    .toggle("[戦闘] 弓で射撃 (距離が離れている時)", { defaultValue: config.bowCombo ?? true })
+    .slider("[戦闘] 弓の最短射撃距離 (ブロック)", 8, 40, { valueStep: 1, defaultValue: config.bowDistance ?? 16 })
+    .toggle("[戦闘] エリトラ+メイス落下攻撃 (急降下コンボ)", { defaultValue: config.maceCombo ?? true })
+    .toggle("[戦闘] エリトラを使う", { defaultValue: config.elytraDash ?? true })
+    .slider("[戦闘] エリトラの発動距離 (ブロック)", 6, 32, { valueStep: 1, defaultValue: config.elytraDistance ?? 12 })
+    .toggle("[戦闘] サラウンド (相手を黒曜石で囲む)", { defaultValue: config.surroundTactic ?? true })
+    .toggle("[戦闘] 自爆移動 (クリスタルサーフ/アンカージャンプ)", { defaultValue: config.crystalSurf ?? true })
+    .toggle("[戦闘] ベッド爆弾 (ネザー/エンド限定)", { defaultValue: config.bedCombo ?? false })
     .toggle("[人間味] 遅れ・ブレ・ミスを有効にする", { defaultValue: config.humanize })
     .slider("[人間味] 反応の遅れ (大きいほど鈍い)", 0, 12, { valueStep: 1, defaultValue: config.reactionDelay })
     .slider("[人間味] 視線のブレ (%)", 0, 30, { valueStep: 1, defaultValue: Math.round(Number(config.aimJitter ?? 0) * 100) })
@@ -254,11 +294,11 @@ async function openBotSettingsModal(player, bot) {
     runtime.isConfiguring = false;
   }
   if (response.canceled || !response.formValues) return;
-  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
+  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
   const current = ensureBotInitialized(bot, player);
   if (!current) return;
   const updated = persistBotConfig(bot, {
-    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
+    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
     debug: { enabled: debugEnabled, movement: debugMovement, scan: debugScan, combat: debugCombat, health: debugHealth, totem: debugTotem, loadout: debugLoadout, inventory: debugInventory },
   });
   bot.nameTag = updated.displayName || getDefaultBotDisplayName(updated.uid);
@@ -433,8 +473,7 @@ export async function openRootMenu(player) {
 // Command handler factory
 export function createPlayerCommandHandler(callback) {
   return (origin, ...args) => {
-    const executor = origin.sourceEntity?.typeId === "minecraft:player" ? origin.sourceEntity
-      : origin.initiator?.typeId === "minecraft:player" ? origin.initiator : undefined;
+    const executor = resolveCommandPlayer(origin);
     if (!executor) return { status: CustomCommandStatus.Failure, message: "このコマンドはプレイヤーから実行してください。" };
     system.run(() => {
       try {

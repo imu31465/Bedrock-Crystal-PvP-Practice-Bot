@@ -7,30 +7,36 @@ import {
   OBSIDIAN_ID, SWORD_RANGE, MOVE_FILLER_BLOCK_IDS,
   TACTIC_TARGET_ABOVE_THRESHOLD, TACTIC_TARGET_BELOW_THRESHOLD,
   TACTIC_PILLAR_MAX_HEIGHT, TACTIC_BRIDGE_MAX_LENGTH,
-  TACTIC_PLACE_COOLDOWN_TICKS, TACTIC_HIGH_GROUND_BONUS_Y,
+  TACTIC_PLACE_COOLDOWN_TICKS, TACTIC_LOW_GROUND_SEARCH_Y,
   TACTIC_LEDGE_SAFETY_MARGIN, PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE,
+  SURROUND_OFFSETS, SURROUND_MIN_SEAL, SURROUND_COOLDOWN_TICKS, SURROUND_TARGET_MAX_SPEED,
+  SURROUND_WIP_COOLDOWN_TICKS, SURROUND_SEAL_EXPIRE_TICKS,
+  SURF_MIN_HP_AFTER, SURF_COOLDOWN_TICKS,
 } from "./constants.js";
 import { globalTick, globalSettings } from "./state.js";
 import {
   distance, addVector, vectorTo, normalize2D, floorLocation,
   getBlock, isAirBlock, isSolidBlock, quoteCoord,
   isLocationInsideBotBoundary, patchRunDimensionCommandNoThrow,
-  countItemInContainer, debugLog,
+  countItemInContainer, debugLog, patchGetCurrentHealthValue,
 } from "./utils.js";
 import { getRuntime } from "./config.js";
 import {
   navIsStandableCell, navFindStandableNear, navFindGroundY,
   navIsPassableBlock, navCanOccupy, navHasWalkableLine,
 } from "./navigation.js";
-import { equipMainhandItem, consumeManagedItem, selectBestSword } from "./inventory.js";
+import { equipMainhandItem, consumeManagedItem, selectBestSword, patchCalculateExpectedHealthDamage } from "./inventory.js";
+import { estimateExplosionDamage, runCrystalExplosionWithFallback, patchRunAnchorPlaceAndDetonateSequence, setBlockIdWithFallback } from "./explosion.js";
 
 // ── Tactic modes ──
 export const TACTIC_ENGAGE = "engage";        // 同高度・射程内 → 周回して殴る
 export const TACTIC_CLOSE_GAP = "close_gap";  // 遠い → 最短で詰める
-export const TACTIC_CLIMB = "climb";          // ターゲットが上 → 登る/柱を立てる
+export const TACTIC_CLIMB = "climb";          // ターゲットが上（遠方）→ 登る/柱を立てる
 export const TACTIC_DESCEND = "descend";      // ターゲットが下 → 安全に降りる
 export const TACTIC_KITE = "kite";            // 回復中 → 距離を取る
-export const TACTIC_HIGH_GROUND = "high_ground"; // 高所を取ってから戦う
+// [B-7] CrystalPvPの実戦メタは「低位有利」(2b2t Wiki: gaining the lower ground)。
+// 爆風は体の下面にのみ当たるため、低い位置に立つ側が被弾を最小化できる。
+export const TACTIC_LOW_GROUND = "low_ground"; // 低位を取ってから戦う（旧 high_ground の反転）
 export const TACTIC_HOLD = "hold";            // 追い詰められた/待機
 
 // ── Block placement ──
@@ -152,14 +158,17 @@ export function tacticComputeOrbitGoal(bot, target, config, strafeDirection) {
   return undefined;
 }
 
-// ── 高所取り ──
-// ターゲット周辺で、ターゲットより高くて射程内に入れる立ち位置を探す
-export function tacticFindHighGroundGoal(bot, target, config) {
-  const desired = Math.max(2, Number(config.maintainDistance ?? 3));
+// ── [B-7] 低位（ローグラウンド）取り ──
+// CrystalPvPの実戦メタは「低位有利」: 爆風はプレイヤーの体の下面にのみ当たり
+// 上面には当たらない（2b2t Wiki）。相手の足元以下（dy=-2〜0）で、射程内に入れる
+// 立ち位置を探し、低いほど高スコアを与える。旧 tacticFindHighGroundGoal は
+// このメタと逆（高所 +2.6/tick）だったため置き換えた。
+export function tacticFindLowGroundGoal(bot, target, config) {
+  const desired = Math.max(1.4, Number(config.maintainDistance ?? 3));
   const targetFloor = floorLocation(target.location);
   const searchRadius = Math.min(7, Math.ceil(desired) + 3);
   let best, bestScore = Number.NEGATIVE_INFINITY;
-  for (let dy = 1; dy <= 4; dy++) {
+  for (let dy = -TACTIC_LOW_GROUND_SEARCH_Y; dy <= 0; dy++) {
     for (let dx = -searchRadius; dx <= searchRadius; dx++) {
       for (let dz = -searchRadius; dz <= searchRadius; dz++) {
         const x = targetFloor.x + dx, y = targetFloor.y + dy, z = targetFloor.z + dz;
@@ -170,13 +179,140 @@ export function tacticFindHighGroundGoal(bot, target, config) {
         if (horizontal < 1.2 || horizontal > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE) continue;
         const travel = distance(bot.location, candidate);
         if (travel > 16) continue;
-        const heightAdvantage = candidate.y - target.location.y;
-        const score = heightAdvantage * 2.6 - Math.abs(horizontal - desired) * 1.3 - travel * 0.42;
+        // 低いほど有利（体の上面は爆風が当たらない。1ブロック下なら致死級も生存可）
+        const lowAdvantage = targetFloor.y - candidate.y;
+        const score = lowAdvantage * 2.6 - Math.abs(horizontal - desired) * 1.3 - travel * 0.42;
         if (score > bestScore) { bestScore = score; best = candidate; }
       }
     }
   }
   return best;
+}
+
+// ── [B-3] サラウンド（囲い戦術）──
+// 相手の周囲4面+足元を黒曜石で塞いで逃げ道を断つ。設置は tacticPlaceBlockAt の
+// クールダウンに従って数ティックに分けて行われ、4面封鎖で成立 → 直後の
+// クリスタルコンボが確実に通る。
+export function trySurroundTarget(bot, target, config) {
+  if (config.surroundTactic === false || config.blockPlacing === false) return false;
+  const runtime = getRuntime(config.uid);
+  // [v0.5.0] 封鎖が未完成のうちは高速で試行を重ねる (旧: 途中でも3秒待つため囲いが
+  // 完成する前に通常起爆が「部分囲いの隙間」から飛び、囲いだけが相手の盾になる事故が起きた)
+  const sealedBefore = countSurroundSeal(bot, target);
+  const cd = sealedBefore >= SURROUND_MIN_SEAL ? SURROUND_COOLDOWN_TICKS : SURROUND_WIP_COOLDOWN_TICKS;
+  if (globalTick - Number(runtime.lastSurroundTick ?? -9999) < cd) return false;
+  // 相手がほぼ静止（接地して動けない）時のみ狙う
+  let speed = 0;
+  try { const v = target.velocity; speed = Math.hypot(v.x, v.y, v.z); } catch {}
+  if (speed > SURROUND_TARGET_MAX_SPEED) return false;
+  if (distance(bot.location, target.location) > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE + 1) return false;
+  runtime.lastSurroundTick = globalTick;
+  const feet = floorLocation(target.location);
+  // [v0.5.0] 囲い対象を記録 (scanCrystalCandidates/scanAnchorCandidates が参照)。
+  // 1個でも置いた時点で記録する — 部分囲いでも既に側面起爆は遮蔽され、
+  // 相手を守ってしまうため (ユーザー実機指摘の根本原因)。
+  runtime.surroundTargetId = String(target.id);
+  runtime.surroundSealTick = globalTick;
+  let sealed = 0, placed = 0;
+  for (const off of SURROUND_OFFSETS) {
+    const loc = { x: feet.x + off.x, y: feet.y + off.y, z: feet.z + off.z };
+    if (off.y === 0 && loc.x === Math.floor(bot.location.x) && loc.z === Math.floor(bot.location.z) &&
+        Math.abs(loc.y - Math.floor(bot.location.y)) <= 1) continue; // Bot自身の位置は塞がない
+    const block = getBlock(bot.dimension, loc);
+    if (block && !isAirBlock(block)) { sealed++; continue; }         // 既に塞がっている
+    if (placed >= 2) continue;                                       // 1呼び出しで2設置まで
+    if (tacticPlaceBlockAt(bot, config, loc)) { sealed++; placed++; }
+  }
+  if (sealed >= SURROUND_MIN_SEAL) {
+    debugLog(bot, config, "combat", `§d[Surround] 封鎖成立 ${sealed}/5 → 頭上起爆へ移行`, true);
+    return true;   // 呼び出し側は直後の爆発コンボへ繋ぐ
+  }
+  if (placed > 0) debugLog(bot, config, "combat", `§d[Surround] 封鎖進捗 ${sealed}/5`, false);
+  return false;
+}
+
+// [v0.5.0] 現在の封鎖数を数える（高速試行のCD判定用）
+function countSurroundSeal(bot, target) {
+  try {
+    const feet = floorLocation(target.location);
+    let sealed = 0;
+    for (const off of SURROUND_OFFSETS) {
+      if (off.y !== 0) continue; // 側面4面のみカウント
+      const block = getBlock(bot.dimension, { x: feet.x + off.x, y: feet.y + off.y, z: feet.z + off.z });
+      if (block && !isAirBlock(block)) sealed++;
+    }
+    return sealed;
+  } catch { return SURROUND_MIN_SEAL; }
+}
+
+// ── [C-2] クリスタルサーフィン ──
+// 自分の足元前方に黒曜石+クリスタルを置いて自爆し、エンジンの爆発ノックバックで
+// 高速移動・高度獲得を行う実戦移動技術。自傷推定 (A-6) を超えたら不発。
+// ダメージもノックバックもすべてエンジン計算（実プレイヤーと同一）。
+export async function tryCrystalSurf(bot, config, direction) {
+  if (config.crystalSurf === false || config.crystalCombo === false) return false;
+  if (config.blockPlacing === false) return false;
+  const runtime = getRuntime(config.uid);
+  if (globalTick - Number(runtime.lastSurfTick ?? -9999) < SURF_COOLDOWN_TICKS) return false;
+  const dir = normalize2D(direction);
+  if (!dir || (Math.abs(dir.x) < 0.01 && Math.abs(dir.z) < 0.01)) return false;
+  const feet = floorLocation(bot.location);
+  const base = { x: feet.x + Math.round(dir.x), y: feet.y, z: feet.z + Math.round(dir.z) };
+  // 設置先は空気、その上も空気（クリスタルは2x2）
+  if (!isAirBlock(getBlock(bot.dimension, base))) return false;
+  if (!isAirBlock(getBlock(bot.dimension, { x: base.x, y: base.y + 1, z: base.z }))) return false;
+  // 自傷推定 [A-6]: エンジンが計算する自爆ダメージを見積もる
+  const crystalLocation = { x: base.x + 0.5, y: base.y + 1, z: base.z + 0.5 };
+  const rawSelf = estimateExplosionDamage(bot, crystalLocation, "crystal");
+  const selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelf, "entityExplosion");
+  const hpAfter = patchGetCurrentHealthValue(bot) - selfDamage;
+  if (hpAfter < SURF_MIN_HP_AFTER && !hasTotemInOffhand(bot)) return false; // 危険なら不発
+  runtime.lastSurfTick = globalTick;
+  // 実行: 黒曜石設置 → クリスタル設置 → エンジン起爆（ノックバックで移動）
+  if (!equipMainhandItem(bot, OBSIDIAN_ID, config)) return false;
+  if (!consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) return false;
+  if (!(await setBlockIdWithFallback(bot.dimension, base, OBSIDIAN_ID, "keep"))) return false;
+  if (!equipMainhandItem(bot, "minecraft:end_crystal", config)) return false;
+  if (!consumeManagedItem(bot, config, "minecraft:end_crystal", 1)) return false;
+  const crystal = bot.dimension.spawnEntity("minecraft:end_crystal", crystalLocation);
+  await new Promise(resolve => system.runTimeout(resolve, 1));
+  await runCrystalExplosionWithFallback(bot.dimension, base, bot, crystal);
+  selectBestSword(bot);
+  debugLog(bot, config, "movement", `§d[Surf] サーフィン起爆 estSelf=${selfDamage.toFixed(1)}`, true);
+  return true;
+}
+
+function hasTotemInOffhand(bot) {
+  try {
+    const equippable = bot.getComponent("minecraft:equippable");
+    return equippable?.getEquipment?.("Offhand")?.typeId === "minecraft:totem_of_undying";
+  } catch { return false; }
+}
+
+// ── [C-3] アンカージャンプ ──
+// ジャンプで浮いた瞬間に足元（旧足位置）へアンカーを置き、チャージ1で起爆して
+// 上方向KBを得る。ネザー以外の次元で有効（アンカーはネザー以外で爆発する）。
+export async function tryAnchorJump(bot, config) {
+  if (config.crystalSurf === false || config.anchorCombo === false) return false;
+  if (bot.dimension.id === "minecraft:nether") return false;
+  const runtime = getRuntime(config.uid);
+  if (globalTick - Number(runtime.lastAnchorJumpTick ?? -9999) < SURF_COOLDOWN_TICKS) return false;
+  // 自傷推定 [A-6]
+  const feet = floorLocation(bot.location);
+  const explosionLocation = { x: feet.x + 0.5, y: feet.y + 0.5, z: feet.z + 0.5 };
+  const rawSelf = estimateExplosionDamage(bot, explosionLocation, "anchor");
+  const selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelf, "blockExplosion");
+  if (patchGetCurrentHealthValue(bot) - selfDamage < SURF_MIN_HP_AFTER && !hasTotemInOffhand(bot)) return false;
+  runtime.lastAnchorJumpTick = globalTick;
+  // ジャンプ → 浮いた先の旧足位置にアンカー設置＋チャージ＋起爆（すべて実エンジン爆発）
+  try { bot.applyImpulse({ x: 0, y: 0.42, z: 0 }); } catch {}
+  await new Promise(resolve => system.runTimeout(resolve, 2));
+  const result = await patchRunAnchorPlaceAndDetonateSequence(bot.dimension, feet, bot, {
+    placementMode: "place-anchor", needsCharge: true, detonateDelay: 1, cleanupIfCancelled: true,
+  });
+  selectBestSword(bot);
+  if (!result?.cancelled) debugLog(bot, config, "movement", `§d[AnchorJump] 起爆 estSelf=${selfDamage.toFixed(1)}`, true);
+  return !result?.cancelled;
 }
 
 // ── ターゲットが下 → 安全な降下地点 ──
@@ -259,17 +395,31 @@ export function evaluateCombatTactic(bot, target, config, options = {}) {
     };
   }
 
-  // ターゲットが上 → 登る
+  // ターゲットが上 → [B-7] 射程内なら登らずに足元（柱の根元）を狙う
+  // 爆風は体の下面にのみ当たるため、上にいる相手ほど足元起爆で大ダメージを受ける。
+  // Botは安全な低位から攻撃でき、自ら最大被弾位置（高所）に立つ必要がない。
   if (verticalDelta >= TACTIC_TARGET_ABOVE_THRESHOLD) {
-    const goal = navFindStandableNear(bot.dimension, target.location, 3, 3) ??
-                 tacticFindHighGroundGoal(bot, target, config);
+    if (horizontalDistance <= PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE) {
+      // 射程内の高所の相手: その場の高さで交戦（足元への起爆は通常のコンボが担う）
+      return {
+        mode: TACTIC_ENGAGE,
+        goal: tacticComputeOrbitGoal(bot, target, config, Number(runtime.strafeDirection ?? 1)),
+        desiredDistance: maintainDistance,
+        sprint: horizontalDistance > 3,
+        allowJump: false, // ジャンプで浮くと自分の下面を曝すため抑制
+        reason: `相手は高所・射程内 → 低位から足元を狙う (+${verticalDelta.toFixed(1)})`,
+      };
+    }
+    // 遠方の高所: 根元まで最短で詰める（柱は最終手段のみ）
+    const goal = navFindStandableNear(bot.dimension, { x: target.location.x, y: target.location.y - 2, z: target.location.z }, 3, 3) ??
+                 navFindStandableNear(bot.dimension, target.location, 3, 3);
     return {
       mode: TACTIC_CLIMB,
       goal,
       desiredDistance: maintainDistance,
       sprint: horizontalDistance > 3,
       allowJump: true,
-      reason: `ターゲットが上 (+${verticalDelta.toFixed(1)})`,
+      reason: `ターゲットが上・遠方 → 根元へ詰める (+${verticalDelta.toFixed(1)})`,
     };
   }
 
@@ -297,32 +447,34 @@ export function evaluateCombatTactic(bot, target, config, options = {}) {
     };
   }
 
-  // 射程内。高所が近くにあるなら取りに行く（クリスタル有利ポジション）
-  const wantsHighGround = config.highGroundTactic !== false && config.crystalCombo !== false &&
-    verticalDelta > -TACTIC_HIGH_GROUND_BONUS_Y &&
-    globalTick - Number(runtime.lastHighGroundSearchTick ?? -9999) >= 40;
-  if (wantsHighGround) {
-    runtime.lastHighGroundSearchTick = globalTick;
-    const highGround = tacticFindHighGroundGoal(bot, target, config);
-    if (highGround && highGround.y - bot.location.y >= 1.2 &&
-        navHasWalkableLine(bot.dimension, bot.location, highGround, 1, 3)) {
-      runtime.highGroundGoal = highGround;
-      runtime.highGroundUntilTick = globalTick + 40;
+  // 射程内。[B-7] 低位（ローグラウンド）が近くにあるなら取りに行く
+  // （実戦メタ: 低い位置に立つ側が有利。旧「高所を取る」はメタと逆だった）
+  const wantsLowGround = config.highGroundTactic !== false && config.crystalCombo !== false &&
+    verticalDelta < 1.0 &&
+    globalTick - Number(runtime.lastLowGroundSearchTick ?? -9999) >= 40;
+  if (wantsLowGround) {
+    runtime.lastLowGroundSearchTick = globalTick;
+    const lowGround = tacticFindLowGroundGoal(bot, target, config);
+    // 意味があるのは「今より少なくとも1ブロック低い」位置にある場合のみ
+    if (lowGround && bot.location.y - lowGround.y >= 1.2 &&
+        navHasWalkableLine(bot.dimension, bot.location, lowGround, 1, 3)) {
+      runtime.lowGroundGoal = lowGround;
+      runtime.lowGroundUntilTick = globalTick + 40;
     }
   }
-  if (runtime.highGroundGoal && globalTick <= Number(runtime.highGroundUntilTick ?? -9999)) {
-    const goal = runtime.highGroundGoal;
+  if (runtime.lowGroundGoal && globalTick <= Number(runtime.lowGroundUntilTick ?? -9999)) {
+    const goal = runtime.lowGroundGoal;
     if (Math.abs(bot.location.y - goal.y) > 0.6 || distance(bot.location, goal) > 1.2) {
       return {
-        mode: TACTIC_HIGH_GROUND,
+        mode: TACTIC_LOW_GROUND,
         goal,
         desiredDistance: maintainDistance,
         sprint: false,
-        allowJump: true,
-        reason: "高所を確保",
+        allowJump: false, // 低位へは落ちて移動（ジャンプで浮かない）
+        reason: "低位を確保 (ローグラウンド)",
       };
     }
-    runtime.highGroundGoal = undefined;
+    runtime.lowGroundGoal = undefined;
   }
 
   // 通常の戦闘: 周回しつつ維持距離をキープ

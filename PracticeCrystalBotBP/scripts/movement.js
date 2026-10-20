@@ -19,6 +19,7 @@ import {
   STUCK_DETOUR_HOLD_TICKS, LOOK_TURN_SPEED_COMBAT, LOOK_TURN_SPEED_TRAVEL,
   TACTIC_ORBIT_DISTANCE_TOLERANCE,
 } from "./constants.js";
+import { isSimBot } from "./sim_port.js";
 import { globalTick, globalSettings } from "./state.js";
 import {
   distance, distanceSquared, vectorTo, addVector, normalize2D,
@@ -45,9 +46,10 @@ import {
 } from "./navigation.js";
 import {
   evaluateCombatTactic, tacticTryPillarUp, tacticTryBridgeToward,
+  tryCrystalSurf, tryAnchorJump,
   tacticIsDangerousLedge, tacticPlaceBlockAt,
   TACTIC_ENGAGE, TACTIC_CLOSE_GAP, TACTIC_CLIMB, TACTIC_DESCEND,
-  TACTIC_KITE, TACTIC_HIGH_GROUND, TACTIC_HOLD,
+  TACTIC_KITE, TACTIC_LOW_GROUND, TACTIC_HOLD,
 } from "./tactics.js";
 
 // ── Golden Apple Effects ──
@@ -371,13 +373,57 @@ export function handlePearlMove(bot, target, config) {
   runtime.pendingPearlToken = token;
   if (!equipMainhandItem(bot, ENDER_PEARL_ID, config) || !consumeManagedItem(bot, config, ENDER_PEARL_ID, 1)) { runtime.pendingPearlToken = ""; return; }
   faceBotToward(bot, landingSpot);
-  try { bot.dimension.spawnEntity(ENDER_PEARL_ID, addVector(bot.location, { x: 0, y: 1.45, z: 0 })); } catch {}
-  system.runTimeout(() => {
-    if (runtime.pendingPearlToken !== token) return;
-    try { bot.teleport(landingSpot, { dimension: bot.dimension, facingLocation: target.location }); } catch {}
-    const held = getEquippableComponent(bot)?.getEquipment(EquipmentSlot.Mainhand);
-    if (held?.typeId === ENDER_PEARL_ID) selectBestSword(bot);
-  }, PEARL_VISUAL_DELAY);
+  // 実投げ: エンパ実体を射出し、実際の弾道で飛行させる(着地点到達/静止でテレポート)
+  let pearl;
+  let launchMethod = "";
+  try {
+    const eye = addVector(bot.location, { x: 0, y: 1.45, z: 0 });
+    const aimPoint = addVector(landingSpot, { x: 0, y: 0.6, z: 0 });
+    const toLand = vectorTo(eye, aimPoint);
+    const dist = Math.hypot(toLand.x, toLand.y, toLand.z) || 1;
+    const dir = { x: toLand.x / dist, y: toLand.y / dist + 0.1, z: toLand.z / dist };
+    const speed = Math.max(0.8, Math.min(2.4, dist * 0.1));
+    pearl = bot.dimension.spawnEntity(ENDER_PEARL_ID, eye);
+    try { pearl.shoot({ direction: dir, speed }); launchMethod = "shoot"; }
+    catch {
+      try { pearl.applyImpulse({ x: dir.x * speed, y: dir.y * speed, z: dir.z * speed }); launchMethod = "impulse"; } catch {}
+    }
+    debugLog(bot, config, "movement", `§e[Pearl] thrown ${launchMethod || "stationary"} dist=${dist.toFixed(1)} speed=${speed.toFixed(2)}`, true);
+  } catch { pearl = undefined; }
+  trackThrownPearl(bot, pearl, landingSpot, target, runtime, token);
+}
+
+// 射出したエンパの着地追跡: 弾道が落ち着いた/目標地点付近に達したらテレポート
+function trackThrownPearl(bot, pearl, landingSpot, target, runtime, token) {
+  let ticks = 0;
+  const step = () => {
+    if (runtime.pendingPearlToken !== token) { try { pearl?.remove(); } catch {} return; }
+    try {
+      ticks++;
+      const alive = pearl?.isValid;
+      const vel = alive ? pearl.velocity : undefined;
+      const speed2 = vel ? Math.hypot(vel.x, vel.y, vel.z) : 0;
+      const nearSpot = alive
+        && Math.abs(pearl.location.x - landingSpot.x) + Math.abs(pearl.location.z - landingSpot.z) < 1.2
+        && pearl.location.y - landingSpot.y < 1.5;
+      if (ticks < 6) { system.runTimeout(step, 1); return; }
+      if (!alive || ticks >= 40 || speed2 < 0.05 || nearSpot) {
+        try { pearl?.remove(); } catch {}
+        if (runtime.pendingPearlToken === token) {
+          try { bot.teleport(landingSpot, { dimension: bot.dimension, facingLocation: target.location }); } catch {}
+          runtime.pendingPearlToken = "";
+          const held = getEquippableComponent(bot)?.getEquipment(EquipmentSlot.Mainhand);
+          if (held?.typeId === ENDER_PEARL_ID) selectBestSword(bot);
+        }
+        return;
+      }
+      system.runTimeout(step, 1);
+    } catch {
+      try { pearl?.remove(); } catch {}
+      runtime.pendingPearlToken = "";
+    }
+  };
+  system.runTimeout(step, 1);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -529,6 +575,12 @@ function moveTryJump(bot, runtime, config, extraForward = 0, direction = undefin
   if (globalTick - Number(runtime.lastJumpTick ?? -9999) < MOVE_JUMP_COOLDOWN_TICKS) return false;
   if (!isBotOnGround(bot)) return false;
   if (!moveHasJumpClearance(bot)) return false;
+  if (isSimBot(bot)) {
+    try { bot.jump(); } catch { return false; }
+    runtime.lastJumpTick = globalTick;
+    runtime.lastJumpDashTick = globalTick;
+    return true;
+  }
   const impulse = { x: 0, y: MOVE_JUMP_IMPULSE, z: 0 };
   if (direction && extraForward > 0) {
     impulse.x = direction.x * extraForward;
@@ -748,6 +800,10 @@ function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirec
       return { handled: true };
     }
     // 掘れない → 上に押し出す
+    if (isSimBot(bot)) {
+      try { bot.jump(); } catch {}
+      return { handled: true };
+    }
     try { bot.applyImpulse({ x: forwardDirection.x * 0.1, y: 0.42, z: forwardDirection.z * 0.1 }); } catch {}
     return { handled: true };
   }
@@ -780,9 +836,19 @@ function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirec
 
   // 段階5: 柱/橋で地形を作る
   if (stuckTicks < STUCK_STAGE_TELEPORT_TICKS) {
-    if (tactic?.mode === TACTIC_CLIMB && tacticTryPillarUp(bot, config, target)) {
+    // [B-7] 相手との水平距離が爆発リーチ内なら柱を立てて追わない（足元起爆が正解）。
+    // 旧実装は「相手が上なら柱で追う」で、最も狙われる自滅ポジション（相手の真下で
+    // 浮いた状態）に自ら上がっていく実戦メタと逆の挙動だった。
+    const horizontalToTarget = target ? Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z) : Infinity;
+    const pillarAllowed = !target || horizontalToTarget > 4.5;
+    if (pillarAllowed && tactic?.mode === TACTIC_CLIMB && tacticTryPillarUp(bot, config, target)) {
       moveTryJump(bot, runtime, config);
       return { handled: true };
+    }
+    // [C-3] アンカージャンプ: 積み上が詰まった時の縦ブースト（ネザー以外・自傷推定OK）
+    if (!pillarAllowed && tactic?.mode === TACTIC_CLIMB && stuckTicks >= STUCK_STAGE_JIGGLE_TICKS &&
+        config.crystalSurf !== false) {
+      try { void tryAnchorJump(bot, config); } catch {}
     }
     if (tacticTryBridgeToward(bot, config, forwardDirection)) return { handled: true };
     if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) return { handled: true };
@@ -808,7 +874,7 @@ function moveHandleAirborne(bot, runtime) {
   // 上昇中(ジャンプ直後)も任せる
   if (velocity.y > 0.05 && runtime.airborneTicks < 12) return true;
   // 垂直速度がほぼ0で空中に留まっている = 浮遊バグ
-  if (runtime.airborneTicks >= 3) {
+  if (runtime.airborneTicks >= 3 && !isSimBot(bot)) {
     try { bot.applyImpulse({ x: 0, y: -0.28, z: 0 }); } catch {}
   }
   return true;
@@ -962,11 +1028,20 @@ export function handleMovement(bot, target, config) {
     }
   }
 
+  // ── [C-2] クリスタルサーフィン（回復中の高速離脱）──
+  // 実戦の移動技術: 自爆のノックバックで逃げる。ダメージはエンジン計算そのまま。
+  if (tactic.mode === TACTIC_KITE && !inWater && onGround && config.crystalSurf !== false) {
+    try { void tryCrystalSurf(bot, config, forwardDirection); } catch {}
+  }
+
   // ── 登れない壁 → 柱を立てて登る ──
-  // 既にターゲットの真下にいる場合はスタック判定を待たずに即座に積む。
-  const horizontalToTarget = Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z);
-  const isDirectlyBelowTarget = horizontalToTarget <= 1.8;
-  if (tactic.mode === TACTIC_CLIMB && onGround &&
+  // [B-7] 旧実装は「ターゲットの真下にいるほど即座に柱を積む」だったが、これは
+  // 実戦メタ（低位有利）と真逆の自滅行動。射程内では交戦を優先し、柱は射程外の
+  // 遠方の高所への到達手段としてのみ許可する。
+  const horizontalToTarget2 = Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z);
+  const isDirectlyBelowTarget = horizontalToTarget2 <= 1.8;
+  const pillarReachable = horizontalToTarget2 > 4.5; // 爆発干渉距離 (F-4) 外のみ柱を許可
+  if (tactic.mode === TACTIC_CLIMB && onGround && pillarReachable &&
       target.location.y - bot.location.y >= 2.2 &&
       (!runtime.navPath || !runtime.navPath.length) &&
       (isDirectlyBelowTarget || stuckTicks >= STUCK_STAGE_JIGGLE_TICKS)) {
