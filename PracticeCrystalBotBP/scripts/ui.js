@@ -34,7 +34,7 @@ import {
 import { botConfigs, runtimeState, trackedBotIdByUid, trackedBotMetaById } from "./state.js";
 import { EntityComponentTypes, EquipmentSlot } from "./constants.js";
 import {
-  spawnSimBotAt, getNextBotName, applyOwnerSkin, despawnSimBot,
+  spawnSimBotAt, getNextBotName, despawnSimBot,
   resolveCommandPlayer, isSimBot,
 } from "./sim_port.js";
 
@@ -69,7 +69,7 @@ export function spawnBotForPlayer(player) {
   const spawnLocation = getSpawnLocationNear(player);
   try {
     const sim = spawnSimBotAt(spawnLocation, player.dimension, getNextBotName(), undefined);
-    applyOwnerSkin(sim, player);
+    // [P1] スキンはRPのsteve/alexテクスチャ上書きで固定（オーナーのスキンをコピーしない）
     attachSpawnedSimBot(sim, {
       playerName: player.name,
       openSettingsAfterSpawn: true,
@@ -91,7 +91,7 @@ export function spawnBotWithPreset(player, presetName) {
   const spawnLocation = getSpawnLocationNear(player);
   try {
     const sim = spawnSimBotAt(spawnLocation, player.dimension, getNextBotName(), undefined);
-    applyOwnerSkin(sim, player);
+    // [P1] スキンはRPのsteve/alexテクスチャ上書きで固定（オーナーのスキンをコピーしない）
     attachSpawnedSimBot(sim, {
       playerName: player.name,
       presetName: preset,
