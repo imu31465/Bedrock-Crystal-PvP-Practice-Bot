@@ -75,7 +75,7 @@ export const COMBAT_PLACEMENT_ENTITY_RADIUS = 0.78;
 export const COMBAT_PLACEMENT_ENTITY_HEIGHT = 1.9;
 export const RESPAWN_ANCHOR_CHARGE_STATE = "respawn_anchor_charge";
 export const RESPAWN_ANCHOR_MAX_CHARGE = 4;
-export const DEBUG_LOG_LIMIT = 120;
+export const DEBUG_LOG_LIMIT = 1200;
 
 export const DEBUG_THROTTLE = {
   movement: 10,

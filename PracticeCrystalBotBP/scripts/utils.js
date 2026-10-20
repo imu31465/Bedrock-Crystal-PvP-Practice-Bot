@@ -523,24 +523,28 @@ export function logBotEvent(bot, message) {
 
 let debugLastTickByCategory = {};
 export function debugLog(bot, config, category, message, force = false) {
-  if (!config?.debug?.enabled || !config.debug[category]) return;
+  // [P1] "ranged" は debug トグルに存在しない擬似カテゴリで、旧実装では
+  // config.debug["ranged"] が常に undefined のため弓/クロスボウのログが
+  // 永遠に握り潰されていた。combat カテゴリに束ねて可視化する。
+  const debugCategory = category === "ranged" ? "combat" : category;
+  if (!config?.debug?.enabled || !config.debug[debugCategory]) return;
   const owner = getPlayerByName(config.ownerName);
   if (!owner) return;
   const uid = config.uid;
   let runtime = runtimeState.get(uid);
   if (!runtime) { runtime = {}; runtimeState.set(uid, runtime); }
   if (!runtime.debugTickByCategory) runtime.debugTickByCategory = {};
-  const throttle = DEBUG_THROTTLE[category] ?? 0;
-  const lastTick = runtime.debugTickByCategory[category] ?? -9999;
+  const throttle = DEBUG_THROTTLE[debugCategory] ?? 0;
+  const lastTick = runtime.debugTickByCategory[debugCategory] ?? -9999;
   if (!force && throttle > 0 && globalTick - lastTick < throttle) return;
-  runtime.debugTickByCategory[category] = globalTick;
-  appendPersistentDebugLog(category, `${config.displayName || config.uid}: ${message}`);
+  runtime.debugTickByCategory[debugCategory] = globalTick;
+  appendPersistentDebugLog(debugCategory, `${config.displayName || config.uid}: ${message}`);
   const DEBUG_CATEGORY_COLORS = {
     movement: "§b", scan: "§d", combat: "§c",
     health: "§6", totem: "§e", loadout: "§a", inventory: "§9",
   };
-  const categoryColor = DEBUG_CATEGORY_COLORS[category] ?? "§7";
-  owner.sendMessage(`${categoryColor}[PvPBot:${category}]§r §f${message}`);
+  const categoryColor = DEBUG_CATEGORY_COLORS[debugCategory] ?? "§7";
+  owner.sendMessage(`${categoryColor}[PvPBot:${debugCategory}]§r §f${message}`);
 }
 
 export function appendPersistentDebugLog(category, message) {
