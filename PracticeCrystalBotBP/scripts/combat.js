@@ -143,7 +143,16 @@ function patchCanPlaceCombatBlock(bot, location) {
 
 // ── Explosive Candidate Scanning ──
 function isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) {
-  if (config.ignoreSelfDamage) return true;
+  // [P1][RCA-03] 旧: ignoreSelfDamage → 即 true（自爆候補の遮蔽を完全に止めていた=問題Aの直接原因）。
+  // 新: 「寛容な自傷キャップ」に意味を変更する。hard は HP×30%（最低6.0）まで許容、
+  // 通常は HP×20%（最低3.0）。ignoreSelfDamage の UI/設定キーは温存（挙動のみ変更）。
+  let maxSelfDamage;
+  if (config.ignoreSelfDamage) {
+    maxSelfDamage = config.selfDamageTolerance ?? Math.max(6.0, patchGetCurrentHealthValue(bot) * 0.3);
+  } else {
+    maxSelfDamage = config.selfDamageTolerance ?? Math.max(3.0, patchGetCurrentHealthValue(bot) * 0.2);
+  }
+  if (selfDamage > maxSelfDamage) return false;
   if (selfDamage <= 0.05) return true;
   const botHealth = patchGetCurrentHealthValue(bot);
   if (selfDamage >= botHealth - 2) return false;
@@ -448,13 +457,16 @@ export function handleSwordCombo(bot, target, config) {
   // 防具・EPF・無敵フレーム・ノックバック・火属性がすべてエンジン側で処理されるため、
   // 手動ノックバック(applyImpulse)と手動setOnFireはエンジン攻撃時には行わない。
   let usedEngine = false;
+  // [P1][A-1] simulateAttack は存在しない。実在する attackEntity（ターゲット指定攻撃。
+  // 上で距離3・LOS判定済みなので自己ゲート条件を満たす）を使う。攻撃CDはエンジン側。
   try {
-    if (typeof bot.simulateAttack === "function") { bot.simulateAttack(); usedEngine = true; }
+    if (typeof bot.attackEntity === "function") { usedEngine = Boolean(bot.attackEntity(target)); }
+    else if (typeof bot.attack === "function") { usedEngine = Boolean(bot.attack()); }
   } catch { usedEngine = false; }
   if (usedEngine) {
     debugLog(bot, config, "combat", `剣コンボ命中(engine): ${swordStats.damage}`, true);
   } else {
-    // フォールバック: 従来のスクリプト適用（simulateAttack 不可環境向け）
+    // フォールバック: 従来のスクリプト適用（attackEntity 不可環境向け）
     const direction = normalize2D(vectorTo(bot.location, target.location));
     const finalDamage = patchCalculateNetDamage(target, swordStats.damage, "entityAttack");
     patchApplyDamageWithFallback(target, finalDamage, "entityAttack", bot);
@@ -1054,8 +1066,11 @@ export function handleAxeShieldBreak(bot, target, config) {
   // エンジン側で行われる。旧実装の applyDamage(7)+手動KB+手動無効化トラッキングの
   // 「効果適用」は全廃し、shieldDisableUntil はAI判断用の信念記録のみに残す。
   let usedEngine = false;
+  // [P1][A-1] simulateAttack は存在しない。実在する attackEntity に置換
+  // （盾の5秒無効化もエンジン側で処理される。距離・LOSは呼出側で担保済み）。
   try {
-    if (typeof bot.simulateAttack === "function") { bot.simulateAttack(); usedEngine = true; }
+    if (typeof bot.attackEntity === "function") { usedEngine = Boolean(bot.attackEntity(target)); }
+    else if (typeof bot.attack === "function") { usedEngine = Boolean(bot.attack()); }
   } catch { usedEngine = false; }
   if (!usedEngine) {
     const axeDamage = patchCalculateNetDamage(target, 7, "entityAttack"); // フォールバック
@@ -1226,7 +1241,7 @@ function trackBowArrow(bot, arrow, target, config) {
 //   1. 発進ゲート: 相手の近くに敵クリスタル/チャージ済みアンカーがある時は不発
 //      (浮上して食らう場面を作らない)。メイス未所持でも不発。
 //   2. 上昇は最短 (上限10tick・高度は相手+7)。上昇中に相手が起爆源を置いたら即降下。
-//   3. 降下: メイス装備で真下へ急降下し、距離3以内で simulateAttack() を実行。
+//   3. 降下: メイス装備で真下へ急降下し、距離3以内で attackEntity() を実行。
 //      落下ダメージボーナス・Wind Burstの跳ね返りはすべてエンジン計算。
 //      (メイスの落下攻撃仕様はエンジン側が持つため、スクリプトは攻撃操作のみ)
 //   4. 攻撃後は即チェスト/剣を復帰し、遮蔽設置を試みて通常戦闘(低位)へ戻る。
@@ -1322,7 +1337,11 @@ export function handleElytraMaceDive(bot, target, config) {
         try { bot.applyImpulse({ x: 0, y: -0.42, z: 0 }); } catch {}
         if (curD <= MACE_DIVE_ATTACK_RANGE && state.attacks < MACE_DIVE_ATTACKS_MAX) {
           try {
-            const ok = bot.simulateAttack();
+            // [P1][A-1] simulateAttack は存在しない（typeofガードなしで throw を握り潰していた）。
+            // 実在する attackEntity に置換。急降下は curD<=3 のときのみここへ届く。
+            let ok = false;
+            if (typeof bot.attackEntity === "function") { ok = Boolean(bot.attackEntity(target)); }
+            else if (typeof bot.attack === "function") { ok = Boolean(bot.attack()); }
             if (ok) {
               state.attacks++;
               debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 hit #${state.attacks} (engine melee)`, true);

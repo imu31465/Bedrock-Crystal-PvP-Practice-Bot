@@ -5,7 +5,8 @@ import {
   SWORD_STATS, PICKAXE_STATS, BOT_ARMOR, BOT_ARMOR_ENCHANTMENTS,
   BOT_SWORD_ENCHANTMENTS, BOT_CROSSBOW_ENCHANTMENTS, BOT_BOW_ENCHANTMENTS,
   BOT_PICKAXE_ENCHANTMENTS, BOT_ELYTRA_ENCHANTMENTS, MACE_ID, BOT_MACE_ENCHANTMENTS, PATCH_MANAGED_STACK_ITEM_IDS,
-  PATCH_DEFAULT_COMBAT_ITEM_COUNTS, PATCH_VISUAL_SLOT_BY_EQUIPMENT,
+  PATCH_DEFAULT_COMBAT_ITEM_COUNTS, PATCH_WEAPON_MIN_COUNTS, BOT_WEAPON_ENCHANTMENT_SETS,
+  PATCH_VISUAL_SLOT_BY_EQUIPMENT,
   PATCH_VISUAL_EQUIPMENT_SELECTOR_RADIUS, PATCH_VISUAL_EQUIPMENT_RESYNC_TICKS,
   PATCH_TOTEM_POP_HEALTH_THRESHOLD, PATCH_TOTEM_POP_HEALTH_RATIO,
   PATCH_TOTEM_POP_COOLDOWN_TICKS, PATCH_TOTEM_DAMAGE_IMMUNITY_TICKS,
@@ -136,9 +137,13 @@ export function patchCalculateArmorDamageReduction(bot, damage, damageCause) {
   if (!armorItems.length || damage <= 0) return 0;
   const armorPoints = armorItems.reduce((sum, item) => sum + patchGetArmorDefenseValue(item), 0);
   const enchantReduction = armorItems.reduce((sum, item) => sum + patchGetProtectionLevelForDamageCause(item, damageCause), 0);
-  const armorRatio = Math.min(0.6, armorPoints * 0.025);
-  const enchantRatio = Math.min(0.2, enchantReduction * 0.01);
-  return Math.max(0, Math.min(damage, damage * (armorRatio + enchantRatio)));
+  // [P1][H-3] Bedrock 実装に合わせた補正（旧値 2.5%/1% → 半分以下の系統誤差だった）:
+  //   防具点 1点 → 4%、上限 80%（＝最小で 20% 通過）
+  //   EPF 1点 → 4%、上限 80%（Java 互換の EPF 合計 20pt 相当）
+  //   二者は乗算で効く（防具で減った後、エンチャントでさらに減る）
+  const armorPass = Math.max(0.20, 1 - Math.min(0.80, armorPoints * 0.04));
+  const enchantPass = Math.max(0.20, 1 - Math.min(0.80, enchantReduction * 0.04));
+  return Math.max(0, Math.min(damage, damage * armorPass * enchantPass));
 }
 
 function patchGetActiveEffect(entity, effectId) {
@@ -657,6 +662,12 @@ export function handleTotemSafety(bot, config) {
 export function syncBotLoadout(bot, config, force = false) {
   const runtime = getRuntime(config.uid);
   if (!force && globalTick - runtime.lastLoadoutSyncTick < 20) return;
+  // [P1][RCA-08 系] コンボ実行中（エリトラ急降下・盾ガード・クリスタル/アンカー/ベッド
+  // 準備・遠距離引き金）はフルリセット同期を延期する。全消去→装備し直しが
+  // コンボ中のメイン装備を剣に握り替える（従来のRCA-02バグ）のを防ぐ。
+  if (!force && (runtime.elytraDashState?.active || runtime.shieldGuardState?.active
+      || runtime.pendingCrystal || runtime.pendingAnchor
+      || runtime.pendingBed || runtime.pendingRangedDraw)) return;
   const supplyChest = getSupplyChestState(config);
   const owner = config.ownerName ? getPlayerByName(config.ownerName) : undefined;
   const ownerInventory = owner?.getComponent(EntityComponentTypes.Inventory)?.container;
@@ -682,7 +693,13 @@ export function syncBotLoadout(bot, config, force = false) {
 
   let itemCounts = {};
   if (inventoryMode === "infinite") {
-    for (const itemId of PATCH_MANAGED_STACK_ITEM_IDS) itemCounts[itemId] = 64;
+    // [P1][RCA-02] 武器・エリトラ類は infinite モードでも 1 本だけ（64 本並べない）。
+    // 旧実装は全管理アイテムを 64 個補充していたが、武器を管理配列に入れたため
+    // 武器は PATCH_WEAPON_MIN_COUNTS の既定本数に丸める。
+    for (const itemId of PATCH_MANAGED_STACK_ITEM_IDS) {
+      const weaponCount = PATCH_WEAPON_MIN_COUNTS[itemId];
+      itemCounts[itemId] = weaponCount !== undefined ? Math.min(weaponCount, 64) : 64;
+    }
   } else if (inventoryMode === "owner_sync" && ownerSnapshot && !useSupplyChest) {
     const ownerCounts = patchCreateManagedItemCountMap(ownerSnapshot.counts);
     if (!runtime.ownerSyncInitialized) {
@@ -747,15 +764,27 @@ export function syncBotLoadout(bot, config, force = false) {
   patchPlaceItemInContainer(botInventory, cloneItemStack(selectedSword) ?? applyEnchantments(new ItemStack("minecraft:netherite_sword", 1), BOT_SWORD_ENCHANTMENTS));
   for (const itemId of PATCH_MANAGED_STACK_ITEM_IDS) {
     let countToGive = itemId === TOTEM_ID ? totemCountForInventory : itemCounts[itemId];
+    if (!Number.isFinite(Number(countToGive))) countToGive = 0;
+    // [P1][RCA-02] 武器・エリトラ類は最低本数を保証（供給チェスト/オーナー連動で消滅しない）
+    const weaponFloor = PATCH_WEAPON_MIN_COUNTS[itemId];
+    if (weaponFloor !== undefined) countToGive = Math.max(countToGive, weaponFloor);
     if (countToGive > 0) {
       try {
         const dummyItem = new ItemStack(itemId, 1);
         const maxAmount = dummyItem.maxAmount ?? 64;
+        const enchantSet = BOT_WEAPON_ENCHANTMENT_SETS.get(itemId);
         while (countToGive > 0) {
-          const stackSize = Math.min(countToGive, maxAmount);
-          const stack = new ItemStack(itemId, stackSize);
-          try { botInventory.addItem(stack); } catch { patchPlaceItemInContainer(botInventory, stack); }
-          countToGive -= stackSize;
+          if (enchantSet) {
+            // 武器類は 1 本ずつエンチャント付きで補充（エンチャントは未知ID時に自動スキップ）
+            const stack = applyEnchantments(new ItemStack(itemId, 1), enchantSet, config.unbreakableEquipment ?? true);
+            try { botInventory.addItem(stack); } catch { patchPlaceItemInContainer(botInventory, stack); }
+            countToGive -= 1;
+          } else {
+            const stackSize = Math.min(countToGive, maxAmount);
+            const stack = new ItemStack(itemId, stackSize);
+            try { botInventory.addItem(stack); } catch { patchPlaceItemInContainer(botInventory, stack); }
+            countToGive -= stackSize;
+          }
         }
       } catch (error) { appendPersistentDebugLog("inventory", `Item creation failed for ${itemId}: ${formatError(error)}`); }
     }

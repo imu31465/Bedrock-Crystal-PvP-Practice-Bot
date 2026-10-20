@@ -47,7 +47,39 @@ export function spawnSimBotAt(location, dimension, name, gameMode) {
   if (!sim) throw new Error("spawnSimulatedPlayer returned null (Beta APIs experiment must be ON)");
   simBotByPlayerId.set(sim.id, sim);
   try { sim.nameTag = name; } catch {}
+  runSimApiSelfCheck(sim, name);
   return sim;
+}
+
+// ── P1 API 自己診断 (T0) ──
+// 最初に生成した SimulatedPlayer のメソッド実在性を一度だけ検査し、
+// 永続デバッグログ (/pvpbot:debugdump) に記録する。
+// simulateAttack / simulateInteract / simulateBreakBlock は「存在しないはず」の確認用。
+let simApiSelfCheckDone = false;
+function runSimApiSelfCheck(sim, label = "?") {
+  if (simApiSelfCheckDone) return;
+  simApiSelfCheckDone = true;
+  try {
+    const methodNames = [
+      "attack", "attackEntity", "breakBlock", "glide", "isGliding", "stopGliding", "stopFlying",
+      "interact", "interactWithBlock", "interactWithEntity", "useItem", "useItemInSlot",
+      "useItemInSlotOnBlock", "useItemOnBlock", "lookAtBlock", "lookAtEntity",
+      "lookAtLocation", "setBodyRotation", "move", "moveRelative", "moveToLocation",
+      "moveToBlock", "navigateToBlock", "navigateToLocation", "swim", "stopSwimming",
+      "respawn", "jump", "chat", "giveItem", "dropSelectedItem", "setItem",
+      "startBuild", "stopBuild", "rotateBody", "spawnEntity", "disconnect",
+      "simulateAttack", "simulateInteract", "simulateBreakBlock",
+    ];
+    const status = methodNames
+      .map((methodName) => {
+        const value = sim?.[methodName];
+        return `${methodName}=${typeof value === "function" ? "ok" : (value === undefined ? "no" : typeof value)}`;
+      })
+      .join(" ");
+    appendPersistentDebugLog("debug", `[P1][T0] SimulatedPlayer[${label}] API self-check: ${status}`);
+  } catch (error) {
+    appendPersistentDebugLog("debug", `[P1][T0] SimulatedPlayer[${label}] API self-check failed: ${String(error)}`);
+  }
 }
 
 export function applyOwnerSkin(sim, ownerPlayer, delayTicks = 2) {

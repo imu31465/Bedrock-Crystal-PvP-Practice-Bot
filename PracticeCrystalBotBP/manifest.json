@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.5.0: fixed critical combat design flaws from bot-hard testing (working shield-block defense, surround no longer protects the enemy - overhead detonation only, elytra redesigned as mace dive combo with Wind Burst III).",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.5.1: Phase-1 fixes — replaced nonexistent SimulatedPlayer.attack/interact with real attackEntity/interactWithBlock, loadout sync keeps weapons (mace/bow/crossbow/axe/shield/elytra), self-damage capped by HP, armor model corrected to 4%/pt & EPF 4%/pt, dive exclusive during flight.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
 			5,
-			0
+			1
 		],
 		"min_engine_version": [
 			1,
@@ -24,7 +24,7 @@
 			"version": [
 				0,
 				5,
-				0
+				1
 			]
 		}
 	],

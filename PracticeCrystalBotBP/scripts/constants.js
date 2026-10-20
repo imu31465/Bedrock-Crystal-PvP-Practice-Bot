@@ -36,7 +36,7 @@ export const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 export const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 export const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 export const BOT_READY_TAG = "pvpbot.ready";
-export const ADDON_VERSION = "0.5.0";
+export const ADDON_VERSION = "0.5.1";
 
 export const OBSIDIAN_ID = "minecraft:obsidian";
 export const END_CRYSTAL_ID = "minecraft:end_crystal";
@@ -285,12 +285,15 @@ export const BOT_ELYTRA_ENCHANTMENTS = [
 ];
 
 // [v0.5.0] メイス（エリトラ落下攻撃コンボ用）
-// 注意: density / breach / wind_burst は相互排他。エリトラ急降下→メイスの定番は
-// Wind Burst（ヒット時に突風で跳ね上がり連撃できる）。火力特化なら density V、
-// フル装備相手なら breach IV に差し替え。
+// [P1] 補正: 旧コメント「density / breach / wind_burst は相互排他」は誤り。
+// density（落下ダメージ増幅）と wind_burst（着地バウンド）はどの組み合わせでも衝突しない。
+// 対応: 上の注意は誤り → 正しいルール:「Density V」と「Wind Burst II」は併用推奨。
+// Wind Burst III は跳ね返り最大 21 ブロックで空中滞留が延び被弾リスクが増すため既定は II。
+// enchant 識別子は T0 実機検証（H-6）で自クライアントに試し、欠けていれば applyEnchantments 側で無視される。
 export const MACE_ID = "minecraft:mace";
 export const BOT_MACE_ENCHANTMENTS = [
-  { id: "minecraft:wind_burst", level: 3 },
+  { id: "minecraft:density", level: 5 },
+  { id: "minecraft:wind_burst", level: 2 }, // III は跳ね返り最大 21 ブロックで落下時間が延びる → 既定 II
   { id: "minecraft:unbreaking", level: 3 },
   { id: "minecraft:mending", level: 1 },
 ];
@@ -298,7 +301,7 @@ export const BOT_MACE_ENCHANTMENTS = [
 export const ELYTRA_DIVE_RISE_MAX_TICKS = 10;  // 上昇フェーズの上限（被弾暴露の最小化）
 export const ELYTRA_DIVE_AIM_HEIGHT = 7;       // 相手+7ブロックを目標高度
 export const ELYTRA_DIVE_TOTAL_MAX_TICKS = 26; // 滞空総上限（旧30）
-export const MACE_DIVE_ATTACK_RANGE = 3.0;     // simulateAttack を叩く距離
+export const MACE_DIVE_ATTACK_RANGE = 3.0;     // attackEntity で落下攻撃を叩く距離
 export const MACE_DIVE_ATTACKS_MAX = 2;        // Wind Burst 跳ね返り後の再攻撃回数
 
 export const BOT_ARMOR_ENCHANTMENTS = {
@@ -393,6 +396,11 @@ export const PATCH_MANAGED_STACK_ITEM_IDS = [
   ENDER_PEARL_ID, TOTEM_ID, PATCH_ENCHANTED_GOLDEN_APPLE_ID,
   PATCH_GOLDEN_APPLE_ID,
   "minecraft:netherite_pickaxe",
+  // [P1][RCA-02] 武器・エリトラ類（syncBotLoadout の全消去で消えないよう管理対象にする）
+  MACE_ID,
+  "minecraft:bow", "minecraft:crossbow",
+  "minecraft:netherite_axe", "minecraft:shield",
+  "minecraft:elytra", "minecraft:firework_rocket",
 ];
 
 export const PATCH_DEFAULT_COMBAT_ITEM_COUNTS = {
@@ -401,7 +409,28 @@ export const PATCH_DEFAULT_COMBAT_ITEM_COUNTS = {
   [PATCH_ENCHANTED_GOLDEN_APPLE_ID]: 8, [PATCH_GOLDEN_APPLE_ID]: 16,
   [TOTEM_ID]: 8,
   "minecraft:netherite_pickaxe": 1,
+  // [P1][RCA-02] 武器・エリトラ類の既定本数
+  [MACE_ID]: 1,
+  "minecraft:bow": 1, "minecraft:crossbow": 1,
+  "minecraft:netherite_axe": 1, "minecraft:shield": 1,
+  "minecraft:elytra": 1, "minecraft:firework_rocket": 64,
 };
+
+// [P1][RCA-02] 武器系は「戦闘キット」なのでオーナー/供給チェストの在庫で消えないよう
+// 最低本数を保証する。（syncBotLoadout の補充ループで Math.max に使う）
+export const PATCH_WEAPON_MIN_COUNTS = {
+  [MACE_ID]: 1, "minecraft:bow": 1, "minecraft:crossbow": 1,
+  "minecraft:netherite_axe": 1, "minecraft:shield": 1,
+  "minecraft:elytra": 1, "minecraft:firework_rocket": 64,
+};
+
+// [P1][RCA-02] 補充時にエンチャントを付与する武器（1本ずつ作成）
+export const BOT_WEAPON_ENCHANTMENT_SETS = new Map([
+  [MACE_ID, BOT_MACE_ENCHANTMENTS],
+  ["minecraft:bow", BOT_BOW_ENCHANTMENTS],
+  ["minecraft:crossbow", BOT_CROSSBOW_ENCHANTMENTS],
+  ["minecraft:elytra", BOT_ELYTRA_ENCHANTMENTS],
+]);
 
 export const PATCH_ARMOR_MATERIAL_SCORES = {
   netherite: 60, diamond: 50, iron: 40, chainmail: 30,
@@ -449,7 +478,7 @@ export const PATCH_DIFFICULTY_PRESETS = {
   },
   hard: {
     maintainDistance: 2, pearlDistance: 8, pearlCooldown: 12,
-    swordCooldown: 0, crystalCooldown: 0, crystalDetonateDelay: 0,
+    swordCooldown: 9, crystalCooldown: 0, crystalDetonateDelay: 0,
     anchorCooldown: 0, anchorDetonateDelay: 0, totemRefillDelay: 0,
     reactionDelay: 0, aimJitter: 0, mistakeRate: 0, suboptimalRate: 0,
     jumpDash: true, pearlRecover: false, strafeMove: true,

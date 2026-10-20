@@ -5,6 +5,7 @@
 import {
   system, world, BOT_TYPE, BOT_READY_TAG,
   CommandPermissionLevel, CustomCommandParamType, getIntroMessage,
+  EnchantmentTypes,
 } from "./constants.js";
 import {
   blockCache, globalTick, incrementGlobalTick,
@@ -167,42 +168,49 @@ function tickBots() {
     }
 
     // Movement (エリトラ滑空中は移動エンジンを止める)
-    if (!getRuntime(config.uid).elytraDashState?.active) handleMovement(bot, target, config);
+    const diving = Boolean(getRuntime(config.uid).elytraDashState?.active);
+    if (!diving) handleMovement(bot, target, config);
 
-    // Pearl move
-    handlePearlMove(bot, target, config);
+    if (!diving) {
+      // [P1] エリトラ急降下中は移動・パール・防御設置・シールドガードを全停止。
+      // 急降下本体の step() チェーンだけが走る（旧混線: 空中で剣/パール/防御設置が割り込み）。
+      // Pearl move
+      handlePearlMove(bot, target, config);
 
-    // Defense (inbound projectiles / hostile explosives)
-    void handleSimThreatDefense(bot, target, config);
+      // Defense (inbound projectiles / hostile explosives)
+      void handleSimThreatDefense(bot, target, config);
 
-    // Shield Guard (raise against the enemy's crystal)
-    void handleSimShieldGuard(bot, target, config);
+      // Shield Guard (raise against the enemy's crystal)
+      void handleSimShieldGuard(bot, target, config);
+    }
 
     // Combat
     const guardActive = Boolean(getRuntime(config.uid).shieldGuardState?.active);
-    const explosiveAction = guardActive ? undefined : chooseBestExplosiveAction(bot, target, config);
-    if (explosiveAction) {
-      if (explosiveAction.type === "anchor") {
-        handleAnchorCombo(bot, target, config, explosiveAction.candidate);
-      } else if (explosiveAction.type === "bed") {
-        // [B-5] ベッド爆弾（ネザー/ジ・エンド限定）
-        handleBedCombo(bot, target, config, explosiveAction.candidate);
+    if (!diving && !guardActive) {
+      const explosiveAction = chooseBestExplosiveAction(bot, target, config);
+      if (explosiveAction) {
+        if (explosiveAction.type === "anchor") {
+          handleAnchorCombo(bot, target, config, explosiveAction.candidate);
+        } else if (explosiveAction.type === "bed") {
+          // [B-5] ベッド爆弾（ネザー/ジ・エンド限定）
+          handleBedCombo(bot, target, config, explosiveAction.candidate);
+        } else {
+          handleCrystalCombo(bot, target, config, explosiveAction.candidate);
+        }
+        // 武器bash may also be executed during explosive turns (simultaneous attack — suppress the weapon attack of the dice roll lineage)
+        handleSwordCombo(bot, target, config);
       } else {
-        handleCrystalCombo(bot, target, config, explosiveAction.candidate);
+        // [B-3] サラウンド: 相手が静止していれば囲んでから撃つ
+        trySurroundTarget(bot, target, config);
+        // 相手が盾を構えていたら斧で破解(5秒無効化 → クロスボウも再開)
+        handleAxeShieldBreak(bot, target, config);
+        // [v0.5.0] エリトラ+メイス急降下 (上空滞留を廃した再設計版)
+        handleElytraMaceDive(bot, target, config);
+        // 弓で射撃(距離が離れている時)
+        handleBowAttack(bot, target, config);
+        handleSwordCombo(bot, target, config);
+        void handleSimCrossbowAttack(bot, target, config);
       }
-      // 武器bash may also be executed during explosive turns (simultaneous attack — suppress the weapon attack of the dice roll lineage)
-      handleSwordCombo(bot, target, config);
-    } else if (!guardActive) {
-      // [B-3] サラウンド: 相手が静止していれば囲んでから撃つ
-      trySurroundTarget(bot, target, config);
-      // 相手が盾を構えていたら斧で破解(5秒無効化 → クロスボウも再開)
-      handleAxeShieldBreak(bot, target, config);
-      // [v0.5.0] エリトラ+メイス急降下 (上空滞留を廃した再設計版)
-      handleElytraMaceDive(bot, target, config);
-      // 弓で射撃(距離が離れている時)
-      handleBowAttack(bot, target, config);
-      handleSwordCombo(bot, target, config);
-      void handleSimCrossbowAttack(bot, target, config);
     }
 
     // Visual sync
@@ -432,6 +440,31 @@ try {
 } catch (error) {
   console.warn(`[PvPBot] playerSpawn subscribe failed: ${formatError(error)}`);
 }
+
+// ── P1 エンチャント識別子自己診断 (T0-2) ──
+// Wind Burst / Density / Breach 等がこの環境のレジストリに存在するかを検査し、
+// 永続デバッグログ (/pvpbot:debugdump) に記録する。欠けている場合は
+// applyEnchantments 側の未知IDスキップでフォールバックされる。
+try {
+  system.runTimeout(() => {
+    try {
+      const enchantIds = [
+        "minecraft:wind_burst", "minecraft:density", "minecraft:breach",
+        "minecraft:unbreaking", "minecraft:mending",
+        "minecraft:impaling", "minecraft:fire_aspect", "minecraft:sharpness",
+        "minecraft:efficiency", "minecraft:knockback",
+      ];
+      const results = enchantIds.map((id) => {
+        let ok = false;
+        try { ok = !!EnchantmentTypes.get(id); } catch {}
+        return `${id.replace("minecraft:", "")}=${ok ? "ok" : "missing"}`;
+      });
+      appendPersistentDebugLog("debug", `[P1][T0-2] EnchantmentTypes self-check: ${results.join(" ")}`);
+    } catch (error) {
+      appendPersistentDebugLog("debug", `[P1][T0-2] enchant self-check failed: ${formatError(error)}`);
+    }
+  }, 20);
+} catch {}
 
 // Deferred initialization (after world is ready)
 system.run(() => {

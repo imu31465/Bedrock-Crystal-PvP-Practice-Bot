@@ -444,16 +444,27 @@ export async function placeBedWithFallback(dimension, footLocation, sourceEntity
 }
 
 export async function runBedExplosionWithFallback(dimension, footLocation, source, sourceEntity) {
-  // (1) 実操作による起爆（本物のベッド爆発: 火・ブロック破壊・ダメージすべてエンジン側）
-  if (sourceEntity && typeof sourceEntity.simulateInteract === "function") {
+  // (1) 実操作による起爆（ネザー/エンドでの「ベッドを使う」=寝ようとする行為 → 爆発）。
+  // [P1][A-1] simulateInteract は存在しない。実在する interactWithBlock（距離制限なし・
+  // 対象指定）→ interact（視線 4.5 内レイキャスト）の順で試す。まず lookAtLocation で
+  // ベッド中心に視線を合わせ、レイキャストを合わせておく。
+  if (sourceEntity) {
     try {
-      // ベッドの方を向いてインタラクト
-      sourceEntity.simulateInteract();
-      await patchDelayTicks(2);
-      // ベッドが消えていれば実爆発が起きた
-      const foot = getBlock(dimension, footLocation);
-      if (!foot || foot.typeId !== "minecraft:bed") {
-        return { success: true, mode: "interact" };
+      try { sourceEntity.lookAtLocation?.({ x: footLocation.x + 0.5, y: footLocation.y + 0.5, z: footLocation.z + 0.5 }); } catch {}
+      let usedReal = false;
+      if (typeof sourceEntity.interactWithBlock === "function") {
+        try { usedReal = Boolean(sourceEntity.interactWithBlock(footLocation)); } catch { usedReal = false; }
+      }
+      if (!usedReal && typeof sourceEntity.interact === "function") {
+        try { usedReal = Boolean(sourceEntity.interact()); } catch { usedReal = false; }
+      }
+      if (usedReal) {
+        await patchDelayTicks(2);
+        // ベッドが消えていれば実爆発が起きた
+        const foot = getBlock(dimension, footLocation);
+        if (!foot || foot.typeId !== "minecraft:bed") {
+          return { success: true, mode: "interact" };
+        }
       }
     } catch {}
   }
