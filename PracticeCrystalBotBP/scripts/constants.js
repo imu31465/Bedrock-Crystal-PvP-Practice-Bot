@@ -434,7 +434,6 @@ export const PATCH_INFINITE_ITEM_COUNTS = {
   [RESPAWN_ANCHOR_ID]: 8, [GLOWSTONE_ID]: 64,
   [ENDER_PEARL_ID]: 16,
   [TOTEM_ID]: 4,
-  [PATCH_ENCHANTED_GOLDEN_APPLE_ID]: 4,
   [PATCH_GOLDEN_APPLE_ID]: 64,
   "minecraft:netherite_pickaxe": 1,
 };
