@@ -6,6 +6,7 @@ import {
   BOT_SWORD_ENCHANTMENTS, BOT_CROSSBOW_ENCHANTMENTS, BOT_BOW_ENCHANTMENTS,
   BOT_PICKAXE_ENCHANTMENTS, BOT_ELYTRA_ENCHANTMENTS, MACE_ID, BOT_MACE_ENCHANTMENTS, PATCH_MANAGED_STACK_ITEM_IDS,
   PATCH_DEFAULT_COMBAT_ITEM_COUNTS, PATCH_WEAPON_MIN_COUNTS, BOT_WEAPON_ENCHANTMENT_SETS,
+  PATCH_INFINITE_ITEM_COUNTS,
   PATCH_VISUAL_SLOT_BY_EQUIPMENT,
   PATCH_VISUAL_EQUIPMENT_SELECTOR_RADIUS, PATCH_VISUAL_EQUIPMENT_RESYNC_TICKS,
   PATCH_TOTEM_POP_HEALTH_THRESHOLD, PATCH_TOTEM_POP_HEALTH_RATIO,
@@ -693,12 +694,14 @@ export function syncBotLoadout(bot, config, force = false) {
 
   let itemCounts = {};
   if (inventoryMode === "infinite") {
-    // [P1][RCA-02] 武器・エリトラ類は infinite モードでも 1 本だけ（64 本並べない）。
-    // 旧実装は全管理アイテムを 64 個補充していたが、武器を管理配列に入れたため
-    // 武器は PATCH_WEAPON_MIN_COUNTS の既定本数に丸める。
+    // [P1][RCA-02-2] 武器は PATCH_WEAPON_MIN_COUNTS、消耗品は PATCH_INFINITE_ITEM_COUNTS
+    // に丸める。旧実装は全管理アイテムを64個にしていたが、スタック不能品が64スロット
+    // 喰って武器補充を溃していた（maceInv/bowInv/xbowInv=0 の主因）。
+    const infiniteCounts = PATCH_INFINITE_ITEM_COUNTS;
     for (const itemId of PATCH_MANAGED_STACK_ITEM_IDS) {
-      const weaponCount = PATCH_WEAPON_MIN_COUNTS[itemId];
-      itemCounts[itemId] = weaponCount !== undefined ? Math.min(weaponCount, 64) : 64;
+      itemCounts[itemId] = infiniteCounts[itemId]
+        ?? PATCH_WEAPON_MIN_COUNTS[itemId]
+        ?? 64;
     }
   } else if (inventoryMode === "owner_sync" && ownerSnapshot && !useSupplyChest) {
     const ownerCounts = patchCreateManagedItemCountMap(ownerSnapshot.counts);
@@ -747,6 +750,36 @@ export function syncBotLoadout(bot, config, force = false) {
     }
   }
 
+  // [P1][RCA-02-2] スロット予算ガード: 全モード対象。武器7本+剣1+防具4の12スロットを
+  // 先に予約し、非武器品がその分を食い潰して武器補充が失敗するのを防ぐ。
+  try {
+    const totalSlots = botInventory?.size ?? 36;
+    const reserveSlots = 12;
+    const maxAmountOf = (id) => { try { return new ItemStack(id, 1).maxAmount ?? 64; } catch { return 64; } };
+    let usedSlots = 0;
+    for (const itemId of PATCH_MANAGED_STACK_ITEM_IDS) {
+      if (PATCH_WEAPON_MIN_COUNTS[itemId] === undefined) continue;
+      const count = Math.max(itemCounts[itemId] ?? 0, PATCH_WEAPON_MIN_COUNTS[itemId]);
+      usedSlots += Math.ceil(count / Math.max(1, maxAmountOf(itemId)));
+    }
+    for (const itemId of PATCH_MANAGED_STACK_ITEM_IDS) {
+      if (PATCH_WEAPON_MIN_COUNTS[itemId] !== undefined) continue;
+      const count = itemCounts[itemId] ?? 0;
+      if (count <= 0) continue;
+      const budgetLeft = totalSlots - reserveSlots - usedSlots;
+      if (budgetLeft <= 0) { itemCounts[itemId] = 0; continue; }
+      const maxAmount = Math.max(1, maxAmountOf(itemId));
+      const slotsNeeded = Math.ceil(count / maxAmount);
+      if (slotsNeeded > budgetLeft) {
+        itemCounts[itemId] = Math.max(0, budgetLeft * maxAmount);
+        appendPersistentDebugLog("inventory", `[P1] slot budget trimmed ${itemId} ${slotsNeeded}->${budgetLeft} slots`);
+        usedSlots += budgetLeft;
+      } else {
+        usedSlots += slotsNeeded;
+      }
+    }
+  } catch {}
+
   const selectedSword = supplyChest?.snapshot.bestSword ?? ownerSword ?? applyEnchantments(new ItemStack("minecraft:netherite_sword", 1), BOT_SWORD_ENCHANTMENTS, config.unbreakableEquipment ?? true);
   let totemCountForInventory = itemCounts[TOTEM_ID] ?? 0;
   const currentBotOffhand = botEquippable ? botEquippable.getEquipment(EquipmentSlot.Offhand) : runtime.visualOffhand;
@@ -789,6 +822,21 @@ export function syncBotLoadout(bot, config, force = false) {
       } catch (error) { appendPersistentDebugLog("inventory", `Item creation failed for ${itemId}: ${formatError(error)}`); }
     }
   }
+
+  // [P1][RCA-02-2] 補充漏れの監視: 武器最低本数が守られなかった場合に可視化
+  try {
+    const missingCounts = [];
+    for (const itemId of PATCH_MANAGED_STACK_ITEM_IDS) {
+      const floor = PATCH_WEAPON_MIN_COUNTS[itemId] ?? 0;
+      if (floor <= 0) continue;
+      const actual = countItemInContainer(botInventory, itemId);
+      if (actual < floor) missingCounts.push(`${itemId}:${actual}/${floor}`);
+    }
+    if (missingCounts.length && globalTick - Number(runtime.lastLoadoutWarnTick ?? -9999) > 100) {
+      runtime.lastLoadoutWarnTick = globalTick;
+      appendPersistentDebugLog("inventory", `[P1] loadout fill incomplete: ${missingCounts.join(",")}`);
+    }
+  } catch {}
 
   const selectedArmorBySlot = {};
   for (const armor of BOT_ARMOR) {

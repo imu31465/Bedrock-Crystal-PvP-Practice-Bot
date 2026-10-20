@@ -424,6 +424,21 @@ export const PATCH_WEAPON_MIN_COUNTS = {
   "minecraft:elytra": 1, "minecraft:firework_rocket": 64,
 };
 
+// [P1][RCA-02-2] infinite モードの品目別補充目標数。
+// 旧実装は管理アイテムを全て64個にしていたが、スタック不能品（トーテム/エンチャ金リンゴ/
+// リスポーンアンカー/ツルハシ）が64個=64スロット喰ってインベントリが満杯になり、
+// 後続の武器（メイス/弓/クロスボウ等）が補充できなくなっていた（maceInv=0 の主因）。
+// 未指定品目は PATCH_WEAPON_MIN_COUNTS → 64 の順でフォールバック。
+export const PATCH_INFINITE_ITEM_COUNTS = {
+  [OBSIDIAN_ID]: 64, [END_CRYSTAL_ID]: 64,
+  [RESPAWN_ANCHOR_ID]: 8, [GLOWSTONE_ID]: 64,
+  [ENDER_PEARL_ID]: 16,
+  [TOTEM_ID]: 4,
+  [PATCH_ENCHANTED_GOLDEN_APPLE_ID]: 4,
+  [PATCH_GOLDEN_APPLE_ID]: 64,
+  "minecraft:netherite_pickaxe": 1,
+};
+
 // [P1][RCA-02] 補充時にエンチャントを付与する武器（1本ずつ作成）
 export const BOT_WEAPON_ENCHANTMENT_SETS = new Map([
   [MACE_ID, BOT_MACE_ENCHANTMENTS],
