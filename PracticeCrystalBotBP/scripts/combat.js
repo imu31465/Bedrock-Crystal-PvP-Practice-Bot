@@ -827,8 +827,11 @@ async function placeEmergencyProtectBlock(bot, threatLocation, config, reason) {
   });
   const feetOptions = [candidateAt(1.0, 0), candidateAt(1.5, 0), candidateAt(2.0, 0)];
   const headOptions = [candidateAt(1.0, 1), candidateAt(1.5, 1)];
+  const botCell = floorLocation(bot.location);
   const canPlaceAt = (loc) => {
     try {
+      // [0.5.4] bot 自身の足元セルには置かない（自己埋没→窒息の防止）
+      if (loc.x === botCell.x && loc.z === botCell.z && loc.y === botCell.y) return false;
       if (!isAirBlock(getBlock(bot.dimension, loc))) return false;
       return hasHumanPlaceSupport(bot.dimension, loc);
     } catch { return false; }
@@ -864,7 +867,10 @@ export async function handleSimThreatDefense(bot, target, config) {
   if (isSpawnProtected(config.uid)) return;
   if (runtime.shieldGuardState?.active) return;
   const projectile = findInboundProjectile(bot);
-  if (projectile && globalTick - Number(runtime.lastProjectProtectTick ?? -9999) >= 12) {
+  // [0.5.4] 矢が飛んでくるたびに黒曜石を積むのは過剰（置きすぎで動けなくなる主因）。
+  // 盾ガードが対応中の時は置かず、CD も 12→40tick に延長。
+  if (projectile && !runtime.shieldGuardState?.active &&
+      globalTick - Number(runtime.lastProjectProtectTick ?? -9999) >= 40) {
     runtime.lastProjectProtectTick = globalTick;
     if (config.blastMitigation) await placeEmergencyProtectBlock(bot, projectile.location, config, "projectile");
     const fleeDir = normalize2D(vectorTo(projectile.location, bot.location));
@@ -916,23 +922,20 @@ export async function handleSimThreatDefense(bot, target, config) {
       }
     }
   }
-  // [v0.5.0] 予測先回り遮蔽: 相手が黒曜石+クリスタル/アンカーを手持ちしている＝攻撃態勢。
-  // 設置されてから反応するのではなく、置かれる前に自分の前面（相手方向）へ遮蔽を準備する。
+  // [0.5.4] 予測先回り遮蔽の乱発を是正。旧実装は相手のホットバーにクリスタルが
+  // あるだけで毎CD置き続け、フィールドが黒曜石で埋まり身動き不能になっていた。
+  // 新条件: 「メインハンドに爆発アイテム（今まさに撃つ構え）」かつ至近距離のみ。
   if (config.blastMitigation && target?.isValid &&
       globalTick - Number(runtime.lastPreemptShieldTick ?? -9999) >= DEFENSE_PREEMPT_CD_TICKS) {
     try {
-      const inv = target.getComponent("minecraft:inventory")?.container;
-      let hasWeapon = false;
-      if (inv) {
-        for (let i = 0; i < Math.min(inv.size, 9) && !hasWeapon; i++) {
-          const item = inv.getItem(i);
-          if (item && (item.typeId === END_CRYSTAL_ID || item.typeId === RESPAWN_ANCHOR_ID)) hasWeapon = true;
-        }
-      }
       const mainhand = target.getComponent("minecraft:equippable")?.getEquipment?.(EquipmentSlot.Mainhand);
-      if (mainhand && (mainhand.typeId === END_CRYSTAL_ID || mainhand.typeId === RESPAWN_ANCHOR_ID || mainhand.typeId === OBSIDIAN_ID)) hasWeapon = true;
+      const armed = Boolean(mainhand && (
+        mainhand.typeId === END_CRYSTAL_ID ||
+        mainhand.typeId === RESPAWN_ANCHOR_ID ||
+        mainhand.typeId === OBSIDIAN_ID
+      ));
       const d = distance(bot.location, target.location);
-      if (hasWeapon && d <= PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE + 2 && d >= 3) {
+      if (armed && d <= 5.5 && d >= 2) {
         runtime.lastPreemptShieldTick = globalTick;
         await placeEmergencyProtectBlock(bot, target.location, config, "preempt");
       }
@@ -1392,7 +1395,12 @@ export function handleElytraMaceDive(bot, target, config) {
 function endElytraMaceDive(bot, config, state) {
   try {
     state.active = false;
-    try { getRuntime(config.uid).elytraDashState = undefined; } catch {}
+    try {
+      const rt = getRuntime(config.uid);
+      rt.elytraDashState = undefined;
+      // [0.5.4] 着地後に経路を再構築（穴に嵌まったまま古い経路を追い続けない）
+      rt.navPath = undefined;
+    } catch {}
     const equippable = getEquippableComponent(bot);
     if (equippable) {
       try { equippable.setEquipment(EquipmentSlot.Chest, state.chestItem ?? new ItemStack("minecraft:netherite_chestplate", 1)); } catch {}

@@ -454,22 +454,44 @@ function moveUpdateStuckState(bot, runtime, intendedDirection) {
   if (!previous) { runtime.stuckTicks = 0; return 0; }
 
   const deltaX = current.x - previous.x;
+  const deltaY = current.y - previous.y;
   const deltaZ = current.z - previous.z;
-  const moved = Math.hypot(deltaX, deltaZ);
-  const verticalMoved = Math.abs(current.y - previous.y);
   const wantsToMove = intendedDirection && Math.hypot(intendedDirection.x, intendedDirection.z) > 0.05;
 
-  if (!wantsToMove) { runtime.stuckTicks = 0; return 0; }
-  // 意図方向への前進成分
-  const progress = wantsToMove
-    ? deltaX * intendedDirection.x + deltaZ * intendedDirection.z
-    : moved;
-  // 落下・登坂中は「進んでいる」とみなす
-  if (progress >= STUCK_DETECT_MOVE_EPSILON || verticalMoved > 0.12) {
+  if (!wantsToMove) {
     runtime.stuckTicks = 0;
-  } else {
-    runtime.stuckTicks = Number(runtime.stuckTicks ?? 0) + 1;
+    runtime.stuckWindow = undefined;
+    return 0;
   }
+  // 意図方向への前進成分が出たら即リセット（正常移動）
+  const progress = deltaX * intendedDirection.x + deltaZ * intendedDirection.z;
+  if (progress >= STUCK_DETECT_MOVE_EPSILON) {
+    runtime.stuckTicks = 0;
+    runtime.stuckWindow = { tick: globalTick, x: current.x, y: current.y, z: current.z };
+    return 0;
+  }
+
+  // [0.5.4] 10tick ごとの「水平変位」で判定する。
+  // 旧実装は verticalMoved > 0.12 でリセットしていたため、穴の中でジャンプして
+  // いるだけでスタック判定が毎回消え、脱出エスカレーション（迂回→採掘→柱→TP）が
+  // 永久に発動しなかった（着地後スタックの主因）。
+  const win = runtime.stuckWindow
+    ?? (runtime.stuckWindow = { tick: globalTick, x: current.x, y: current.y, z: current.z });
+  const elapsed = globalTick - win.tick;
+  if (elapsed < 10) return Number(runtime.stuckTicks ?? 0);
+
+  const hMoved = Math.hypot(current.x - win.x, current.z - win.z);
+  const vGain = current.y - win.y;
+  runtime.stuckWindow = { tick: globalTick, x: current.x, y: current.y, z: current.z };
+
+  // 横に1ブロック以上動けた、または柱上昇でほぼ1ブロック垂直に稼いだ → 進んでいる
+  if (hMoved >= 1.0 || vGain >= 0.9) {
+    runtime.stuckTicks = 0;
+    return 0;
+  }
+  // 自由落下中はカウントしない（着地後に改めて判定される）
+  if (deltaY < -0.3) return Number(runtime.stuckTicks ?? 0);
+  runtime.stuckTicks = Number(runtime.stuckTicks ?? 0) + 10;
   return Number(runtime.stuckTicks ?? 0);
 }
 

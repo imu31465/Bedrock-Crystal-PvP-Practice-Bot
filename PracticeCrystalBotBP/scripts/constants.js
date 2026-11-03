@@ -36,7 +36,7 @@ export const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 export const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 export const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 export const BOT_READY_TAG = "pvpbot.ready";
-export const ADDON_VERSION = "0.5.3";
+export const ADDON_VERSION = "0.5.4";
 
 export const OBSIDIAN_ID = "minecraft:obsidian";
 export const END_CRYSTAL_ID = "minecraft:end_crystal";
@@ -172,7 +172,7 @@ export const SURROUND_TOP_BONUS = 25;          // 囲いの真上（頭上）起
 export const DEFENSE_SCAN_TICKS = 4;           // 脅威スキャン間隔 4tick（旧10）
 export const DEFENSE_BLOCK_CD_TICKS = 8;       // 遮蔽設置CD 8tick（旧16）
 export const DEFENSE_THREAT_RADIUS = 8;        // 脅威検知半径 8（旧6.5）
-export const DEFENSE_PREEMPT_CD_TICKS = 100;   // 予測先回り遮蔽のCD 5秒
+export const DEFENSE_PREEMPT_CD_TICKS = 160;   // 予測先回り遮蔽のCD 8秒（置きすぎ防止）
 // [B-4] i-frame明けジャスト起爆 (d-tap)
 export const IFRAME_TICKS = 10;              // 無敵フレーム 10tick
 // [B-2] 予測設置: Java物理で数ティック先を撃つ
@@ -495,12 +495,14 @@ export const PATCH_DIFFICULTY_PRESETS = {
     swordCooldown: 9, crystalCooldown: 0, crystalDetonateDelay: 0,
     anchorCooldown: 0, anchorDetonateDelay: 0, totemRefillDelay: 0,
     reactionDelay: 0, aimJitter: 0, mistakeRate: 0, suboptimalRate: 0,
-    jumpDash: true, pearlRecover: false, strafeMove: true,
-    targetMobs: true, targetBots: true, autoTotem: true,
+    jumpDash: true, pearlRecover: false, pearlMove: true, strafeMove: true,
+    targetMobs: true, targetBots: true, autoTotem: true, recoveryEnabled: true,
     pathfinding: true, blockPlacing: true, highGroundTactic: true,
+    surroundTactic: true, crystalSurf: true, anchorBreakCache: true,
+    enableMining: true, mineStuckTicksThreshold: 10, eatWhenCornered: true,
     escapeTeleport: true, lookTurnSpeed: 120, humanize: false,
     crossbowCombo: true, blastMitigation: true, shieldGuard: true,
-    bowCombo: true, bowDistance: 16, elytraDash: true, elytraDistance: 12,
+    bowCombo: true, bowDistance: 10, elytraDash: true, elytraDistance: 12,
     ignoreSelfDamage: true, tickInterval: 1,
   },
 };

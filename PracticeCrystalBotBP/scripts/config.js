@@ -241,6 +241,14 @@ function configToTag(config) {
   return `${BOT_CONFIG_TAG_PREFIX}${JSON.stringify(data)}`;
 }
 
+// [0.5.4] 数値フィールド用パーサ。
+// 旧実装は `parseInt("0") || saved` としており、"0" は falsy のため hard の
+// 最短クールタイム（0）が保存済みの旧値へ巻き戻ってしまうバグがあった。
+function numberField(rawValue, fallback) {
+  const parsed = Number.parseFloat(rawValue);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function tagToConfig(tagStr, uid, bot) {
   const jsonStr = tagStr.slice(BOT_CONFIG_TAG_PREFIX.length);
   try {
@@ -251,24 +259,24 @@ function tagToConfig(tagStr, uid, bot) {
       displayName: bot?.nameTag,
       ownerName: tagged.ownerName || saved?.ownerName || "",
       enabled: tagged.enabled === undefined ? saved?.enabled : tagged.enabled === "1",
-      maintainDistance: parseInt(tagged.maintainDistance) || saved?.maintainDistance || 3,
-      targetRange: parseInt(tagged.targetRange) || saved?.targetRange || MAX_TARGET_DISTANCE,
+      maintainDistance: numberField(tagged.maintainDistance, saved?.maintainDistance ?? 3),
+      targetRange: numberField(tagged.targetRange, saved?.targetRange ?? MAX_TARGET_DISTANCE),
       targetMobs: tagged.targetMobs === undefined ? saved?.targetMobs : tagged.targetMobs === "1",
       targetBots: tagged.targetBots === undefined ? saved?.targetBots : tagged.targetBots === "1",
       jumpDash: tagged.jumpDash === undefined ? saved?.jumpDash : tagged.jumpDash === "1",
       strafeMove: tagged.strafeMove === undefined ? saved?.strafeMove : tagged.strafeMove === "1",
       enableMining: tagged.enableMining === undefined ? saved?.enableMining : tagged.enableMining === "1",
-      mineStuckTicksThreshold: parseInt(tagged.mineStuckTicksThreshold) || saved?.mineStuckTicksThreshold || 40,
+      mineStuckTicksThreshold: numberField(tagged.mineStuckTicksThreshold, saved?.mineStuckTicksThreshold ?? 40),
       inventoryMode: tagged.inventoryMode || saved?.inventoryMode || "auto_refill",
       mirrorOwnerLoadout: tagged.mirrorOwnerLoadout === undefined ? saved?.mirrorOwnerLoadout : tagged.mirrorOwnerLoadout === "1",
       customItemCounts: tagged.customItemCounts ? JSON.parse(tagged.customItemCounts) : saved?.customItemCounts || {},
       autoTotem: tagged.autoTotem === undefined ? saved?.autoTotem : tagged.autoTotem === "1",
       recoveryEnabled: tagged.recoveryEnabled === undefined ? saved?.recoveryEnabled : tagged.recoveryEnabled === "1",
-      totemRefillDelay: parseInt(tagged.totemRefillDelay) || saved?.totemRefillDelay || 0,
+      totemRefillDelay: numberField(tagged.totemRefillDelay, saved?.totemRefillDelay ?? 0),
       pearlMove: tagged.pearlMove === undefined ? saved?.pearlMove : tagged.pearlMove === "1",
       pearlRecover: tagged.pearlRecover === undefined ? saved?.pearlRecover : tagged.pearlRecover === "1",
-      pearlDistance: parseInt(tagged.pearlDistance) || saved?.pearlDistance || 10,
-      pearlCooldown: parseInt(tagged.pearlCooldown) || saved?.pearlCooldown || 40,
+      pearlDistance: numberField(tagged.pearlDistance, saved?.pearlDistance ?? 10),
+      pearlCooldown: numberField(tagged.pearlCooldown, saved?.pearlCooldown ?? 40),
       surroundTactic: tagged.surroundTactic === undefined ? (saved?.surroundTactic ?? true) : tagged.surroundTactic === "1",
       crystalSurf: tagged.crystalSurf === undefined ? (saved?.crystalSurf ?? true) : tagged.crystalSurf === "1",
       bedCombo: tagged.bedCombo === undefined ? (saved?.bedCombo ?? false) : tagged.bedCombo === "1",
@@ -276,28 +284,28 @@ function tagToConfig(tagStr, uid, bot) {
       blastMitigation: tagged.blastMitigation === undefined ? (saved?.blastMitigation ?? true) : tagged.blastMitigation === "1",
       shieldGuard: tagged.shieldGuard === undefined ? (saved?.shieldGuard ?? true) : tagged.shieldGuard === "1",
       bowCombo: tagged.bowCombo === undefined ? (saved?.bowCombo ?? true) : tagged.bowCombo === "1",
-      bowDistance: parseInt(tagged.bowDistance) || saved?.bowDistance || 16,
+      bowDistance: numberField(tagged.bowDistance, saved?.bowDistance ?? 16),
       elytraDash: tagged.elytraDash === undefined ? (saved?.elytraDash ?? true) : tagged.elytraDash === "1",
       maceCombo: tagged.maceCombo === undefined ? (saved?.maceCombo ?? true) : tagged.maceCombo === "1",
-      elytraDistance: parseInt(tagged.elytraDistance) || saved?.elytraDistance || 12,
+      elytraDistance: numberField(tagged.elytraDistance, saved?.elytraDistance ?? 12),
       swordCombo: tagged.swordCombo === undefined ? saved?.swordCombo : tagged.swordCombo === "1",
-      swordCooldown: parseInt(tagged.swordCooldown) || saved?.swordCooldown || 0,
+      swordCooldown: numberField(tagged.swordCooldown, saved?.swordCooldown ?? 0),
       crystalCombo: tagged.crystalCombo === undefined ? saved?.crystalCombo : tagged.crystalCombo === "1",
-      crystalCooldown: parseInt(tagged.crystalCooldown) || saved?.crystalCooldown || 0,
-      crystalDetonateDelay: parseInt(tagged.crystalDetonateDelay) || saved?.crystalDetonateDelay || 0,
+      crystalCooldown: numberField(tagged.crystalCooldown, saved?.crystalCooldown ?? 0),
+      crystalDetonateDelay: numberField(tagged.crystalDetonateDelay, saved?.crystalDetonateDelay ?? 0),
       ignoreSelfDamage: tagged.ignoreSelfDamage === undefined ? saved?.ignoreSelfDamage : tagged.ignoreSelfDamage === "1",
       anchorCombo: tagged.anchorCombo === undefined ? saved?.anchorCombo : tagged.anchorCombo === "1",
-      anchorCooldown: parseInt(tagged.anchorCooldown) || saved?.anchorCooldown || 0,
-      anchorDetonateDelay: parseInt(tagged.anchorDetonateDelay) || saved?.anchorDetonateDelay || 0,
+      anchorCooldown: numberField(tagged.anchorCooldown, saved?.anchorCooldown ?? 0),
+      anchorDetonateDelay: numberField(tagged.anchorDetonateDelay, saved?.anchorDetonateDelay ?? 0),
       anchorBreakCache: tagged.anchorBreakCache === undefined ? saved?.anchorBreakCache : tagged.anchorBreakCache === "1",
       eatWhenCornered: tagged.eatWhenCornered === undefined ? saved?.eatWhenCornered : tagged.eatWhenCornered === "1",
       humanize: tagged.humanize === undefined ? saved?.humanize : tagged.humanize === "1",
-      reactionDelay: parseInt(tagged.reactionDelay) || saved?.reactionDelay || 0,
-      aimJitter: parseFloat(tagged.aimJitter) || saved?.aimJitter || 0,
-      mistakeRate: parseInt(tagged.mistakeRate) || saved?.mistakeRate || 0,
-      suboptimalRate: parseInt(tagged.suboptimalRate) || saved?.suboptimalRate || 0,
+      reactionDelay: numberField(tagged.reactionDelay, saved?.reactionDelay ?? 0),
+      aimJitter: numberField(tagged.aimJitter, saved?.aimJitter ?? 0),
+      mistakeRate: numberField(tagged.mistakeRate, saved?.mistakeRate ?? 0),
+      suboptimalRate: numberField(tagged.suboptimalRate, saved?.suboptimalRate ?? 0),
       unbreakableEquipment: tagged.unbreakableEquipment === undefined ? saved?.unbreakableEquipment : tagged.unbreakableEquipment === "1",
-      tickInterval: parseInt(tagged.tickInterval) || saved?.tickInterval || 1,
+      tickInterval: numberField(tagged.tickInterval, saved?.tickInterval ?? 1),
       debug: {
         enabled: tagged.debugEnabled === "1",
         movement: tagged.debugMovement === "1",
