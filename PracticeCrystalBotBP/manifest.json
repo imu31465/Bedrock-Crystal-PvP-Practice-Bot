@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.5.2: fixed /bot failing with \"run from a player\" — command handler now resolves the caller from CustomCommandOrigin.sourceEntity instead of the single-real-player heuristic. v0.5.1: Phase-1 fixes — replaced nonexistent SimulatedPlayer.attack/interact with real attackEntity/interactWithBlock, loadout sync keeps weapons (mace/bow/crossbow/axe/shield/elytra), self-damage capped by HP, armor model corrected to 4%/pt & EPF 4%/pt, dive exclusive during flight.",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.5.3: removed the un-namespaced \"bot\" command registration that current engines reject (NoNamespace); /bot resolves via the pvpbot:bot alias. v0.5.2: fixed /bot failing with \"run from a player\" — command handler now resolves the caller from CustomCommandOrigin.sourceEntity instead of the single-real-player heuristic. v0.5.1: Phase-1 fixes — replaced nonexistent SimulatedPlayer.attack/interact with real attackEntity/interactWithBlock, loadout sync keeps weapons (mace/bow/crossbow/axe/shield/elytra), self-damage capped by HP, armor model corrected to 4%/pt & EPF 4%/pt, dive exclusive during flight.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
 			5,
-			2
+			3
 		],
 		"min_engine_version": [
 			1,
@@ -24,7 +24,7 @@
 			"version": [
 				0,
 				5,
-				2
+				3
 			]
 		}
 	],

@@ -306,19 +306,9 @@ try {
   system.beforeEvents.startup.subscribe((event) => {
     const commands = [
       {
-        name: "bot",
-        description: "Crystal PvP Bot のメニューを開きます。プリセット名を指定すると即召喚します。",
-        optionalParameters: [{ name: "preset", type: CustomCommandParamType ? CustomCommandParamType.String : 0 }],
-        handler: (player, presetArg) => {
-          const preset = presetArg?.value ?? presetArg;
-          if (preset && typeof preset === "string" && preset.trim()) {
-            spawnBotWithPreset(player, preset.trim());
-          } else {
-            openRootMenu(player);
-          }
-        },
-      },
-      {
+        // NOTE: an un-namespaced "bot" command cannot be registered on current
+        // engines (registration fails with NoNamespace). /bot keeps working via
+        // the engine-generated alias for pvpbot:bot below.
         name: "pvpbot:bot",
         description: "Crystal PvP Bot のメニューを開きます。プリセット名を指定すると即召喚します。",
         optionalParameters: [{ name: "preset", type: CustomCommandParamType ? CustomCommandParamType.String : 0 }],
