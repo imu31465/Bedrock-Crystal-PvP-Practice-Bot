@@ -178,7 +178,7 @@ function tickBots() {
       handlePearlMove(bot, target, config);
 
       // Defense (inbound projectiles / hostile explosives)
-      void handleSimThreatDefense(bot, target, config);
+      void handleSimThreatDefense(bot, target, config).catch(() => {});
 
       // Shield Guard (raise against the enemy's crystal)
       void handleSimShieldGuard(bot, target, config);

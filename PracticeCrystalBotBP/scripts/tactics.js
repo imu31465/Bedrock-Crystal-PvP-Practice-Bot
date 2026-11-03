@@ -4,7 +4,7 @@
 
 import {
   BlockPermutation, EntityComponentTypes, system,
-  OBSIDIAN_ID, SWORD_RANGE, MOVE_FILLER_BLOCK_IDS,
+  OBSIDIAN_ID, END_CRYSTAL_ENTITY_ID, SWORD_RANGE, MOVE_FILLER_BLOCK_IDS,
   TACTIC_TARGET_ABOVE_THRESHOLD, TACTIC_TARGET_BELOW_THRESHOLD,
   TACTIC_PILLAR_MAX_HEIGHT, TACTIC_BRIDGE_MAX_LENGTH,
   TACTIC_PLACE_COOLDOWN_TICKS, TACTIC_LOW_GROUND_SEARCH_Y,
@@ -274,7 +274,10 @@ export async function tryCrystalSurf(bot, config, direction) {
   if (!(await setBlockIdWithFallback(bot.dimension, base, OBSIDIAN_ID, "keep"))) return false;
   if (!equipMainhandItem(bot, "minecraft:end_crystal", config)) return false;
   if (!consumeManagedItem(bot, config, "minecraft:end_crystal", 1)) return false;
-  const crystal = bot.dimension.spawnEntity("minecraft:end_crystal", crystalLocation);
+  // [0.5.5] エンティティIDは ender_crystal（end_crystal はアイテムID）。
+  // 旧コードはここで InvalidArgumentError を投げ、未処理の promise rejection が
+  // 連発 → 移動処理が中断され「端で固まる」症状の主因になっていた。
+  const crystal = bot.dimension.spawnEntity(END_CRYSTAL_ENTITY_ID, crystalLocation);
   await new Promise(resolve => system.runTimeout(resolve, 1));
   await runCrystalExplosionWithFallback(bot.dimension, base, bot, crystal);
   selectBestSword(bot);

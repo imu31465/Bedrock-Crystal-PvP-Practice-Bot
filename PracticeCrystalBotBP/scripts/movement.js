@@ -870,7 +870,7 @@ function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirec
     // [C-3] アンカージャンプ: 積み上が詰まった時の縦ブースト（ネザー以外・自傷推定OK）
     if (!pillarAllowed && tactic?.mode === TACTIC_CLIMB && stuckTicks >= STUCK_STAGE_JIGGLE_TICKS &&
         config.crystalSurf !== false) {
-      try { void tryAnchorJump(bot, config); } catch {}
+      try { void tryAnchorJump(bot, config).catch(() => {}); } catch {}
     }
     if (tacticTryBridgeToward(bot, config, forwardDirection)) return { handled: true };
     if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) return { handled: true };
@@ -1053,7 +1053,7 @@ export function handleMovement(bot, target, config) {
   // ── [C-2] クリスタルサーフィン（回復中の高速離脱）──
   // 実戦の移動技術: 自爆のノックバックで逃げる。ダメージはエンジン計算そのまま。
   if (tactic.mode === TACTIC_KITE && !inWater && onGround && config.crystalSurf !== false) {
-    try { void tryCrystalSurf(bot, config, forwardDirection); } catch {}
+    try { void tryCrystalSurf(bot, config, forwardDirection).catch(() => {}); } catch {}
   }
 
   // ── 登れない壁 → 柱を立てて登る ──

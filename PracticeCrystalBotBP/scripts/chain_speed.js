@@ -17,7 +17,9 @@ import { globalTick } from "./state.js";
 
 const CHAIN_HISTORY_LIMIT = 12;
 const OBSIDIAN_ID = "minecraft:obsidian";
-const CRYSTAL_ENTITY_ID = "minecraft:end_crystal";
+// [0.5.5] エンティティIDは ender_crystal。旧値 end_crystal（アイテムID）では
+// entitySpawn の照合が永遠に一致せず、チェーン速度計測が沈黙していた。
+const CRYSTAL_ENTITY_ID = "minecraft:ender_crystal";
 const CHAIN_PROP = "pvpbot:chain_history";
 
 // playerId -> { obsidianTick?, placeTick?, placedCrystalId? }

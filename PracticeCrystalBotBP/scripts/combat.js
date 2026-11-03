@@ -736,7 +736,7 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
                 let v = { y: 0 };
                 try { v = liveTarget2.velocity ?? v; } catch {}
                 if (v.y > HIT_CRYSTAL_FALL_VELOCITY && globalTick - Number(hc.since ?? globalTick) < HIT_CRYSTAL_TIMEOUT_TICKS) {
-                  system.runTimeout(() => { void tryDetonate(); }, 1);
+                  system.runTimeout(() => { void tryDetonate().catch(() => {}); }, 1);
                   return;
                 }
                 getRuntime(config.uid).hitCrystalState = undefined;
