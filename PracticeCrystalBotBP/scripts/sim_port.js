@@ -111,16 +111,24 @@ export function scheduleDespawn(bot, delayTicks = 1) {
 }
 
 // Shared command-caller resolution.
-// This engine's CustomCommandOrigin exposes only `sourceType`; sourceEntity /
-// initiator do not exist. Fall back to the single-real-player heuristic used by
-// the POC (multiplayer should use /scriptevent instead).
+// 1) Prefer CustomCommandOrigin.sourceEntity (stable since @minecraft/server 2.x).
+//    Resolving from the origin keeps /bot working while a SimulatedPlayer is
+//    online and in real multiplayer — the old "exactly one real player"
+//    heuristic returned undefined there and failed with
+//    "このコマンドはプレイヤーから実行してください。".
+// 2) Fallback: single-real-player heuristic for origins without a usable
+//    sourceEntity (server / command-block origins resolve nothing).
 export function resolveCommandPlayer(origin) {
-  const candidates = world.getAllPlayers().filter(p => !isSimBot(p));
-  if (candidates.length === 1) return candidates[0];
-  if (candidates.length === 0) return undefined;
-  if (candidates.length > 1 && origin?.sourceType) {
-    // ambiguous in multiplayer: pick none (caller flow asks for scriptevent)
-    return undefined;
-  }
+  try {
+    const src = origin?.sourceEntity;
+    if (src?.typeId === "minecraft:player" && !isSimBot(src)) {
+      void src.location; // validity probe: stale references throw here
+      return src;
+    }
+  } catch {}
+  try {
+    const candidates = world.getAllPlayers().filter(p => !isSimBot(p));
+    if (candidates.length === 1) return candidates[0];
+  } catch {}
   return undefined;
 }
