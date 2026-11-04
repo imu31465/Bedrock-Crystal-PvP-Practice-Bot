@@ -240,7 +240,7 @@ function onEntitySpawn(event) {
     updateTrackedBotMeta(entity, { uid: config.uid });
     logBotEvent(entity, `spawned preset=${request?.presetName ?? "none"}`);
     if (request?.openSettingsAfterSpawn) {
-      const owner = request?.playerName ? world.getAllPlayers().find(p => p.name === request.playerName) : undefined;
+      const owner = request?.playerName ? world.getAllPlayers().find(p => p && p.name === request.playerName) : undefined;
       if (owner) system.runTimeout(() => { void openSettingsForm(owner); }, 10);
     }
   }
@@ -420,7 +420,8 @@ try {
 } catch {}
 try {
   world.afterEvents.playerSpawn.subscribe((event) => {
-    if (isSimBot(event.player)) return;
+    // [0.5.6] SimBot のスポーンは player=undefined で届く（現行エンジン）
+    if (!event.player || isSimBot(event.player)) return;
     system.runTimeout(() => {
       if (introShown.has(event.player.name)) return;
       introShown.add(event.player.name);

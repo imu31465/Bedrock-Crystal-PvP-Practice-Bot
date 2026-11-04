@@ -129,7 +129,7 @@ export function registerChainSpeedTracking() {
         const ownerId = crystalOwner.get(key);
         crystalOwner.delete(key);
         if (!ownerId) return;
-        const player = world.getAllPlayers().find(p => p.id === ownerId);
+        const player = world.getAllPlayers().find(p => p && p.id === ownerId);
         if (!player) return;
         const s = chainState.get(player.id);
         if (!s || s.placeTick === undefined) return;

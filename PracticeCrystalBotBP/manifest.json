@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.5.5: fixed crystal-surf spawning the end crystal with the ITEM id (end_crystal) instead of the ENTITY id (ender_crystal) — the resulting unhandled promise rejections interrupted movement every few seconds (bot froze / got stuck at edges); chain-speed tracker also never matched crystals for the same reason; async calls (surf/anchor/detonate/threat-defense) now always have rejection handlers. v0.5.4: hard preset keeps 0-value cooldowns; stuck detection counts jump-in-place so hole escape works; blast-mitigation block spam tamed; post-dive navigation reset; hard bowDistance 10. v0.5.3: removed un-namespaced \"bot\" registration (NoNamespace); /bot resolves via pvpbot:bot alias. v0.5.2: /bot caller resolved from CustomCommandOrigin.sourceEntity.",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.5.6: hardened against current-engine quirk where a SimulatedPlayer surfaces as undefined in world.getAllPlayers() and playerSpawn events (all player lookups/loops now skip falsy entries; bot-online no longer breaks player iteration). v0.5.5: crystal-surf spawns ender_crystal (entity id, not the item id) and async failures can no longer freeze movement. v0.5.4: hard preset keeps 0-value cooldowns; hole-escape ladder works; blast-mitigation block spam tamed. v0.5.3: un-namespaced \"bot\" registration removed (/bot via pvpbot:bot alias). v0.5.2: /bot caller resolved from CustomCommandOrigin.sourceEntity.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
 			5,
-			5
+			6
 		],
 		"min_engine_version": [
 			1,
@@ -24,7 +24,7 @@
 			"version": [
 				0,
 				5,
-				5
+				6
 			]
 		}
 	],

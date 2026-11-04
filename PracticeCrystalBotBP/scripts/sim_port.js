@@ -127,7 +127,7 @@ export function resolveCommandPlayer(origin) {
     }
   } catch {}
   try {
-    const candidates = world.getAllPlayers().filter(p => !isSimBot(p));
+    const candidates = world.getAllPlayers().filter(p => p && !isSimBot(p));
     if (candidates.length === 1) return candidates[0];
   } catch {}
   return undefined;

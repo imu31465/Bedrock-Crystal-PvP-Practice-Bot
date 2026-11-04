@@ -55,7 +55,7 @@ function attachSpawnedSimBot(sim, request) {
       updateTrackedBotMeta(sim, { uid: config.uid });
       logBotEvent(sim, `spawned sim preset=${request?.presetName ?? "none"}`);
       if (request?.openSettingsAfterSpawn) {
-        const owner = request?.playerName ? world.getAllPlayers().find(p => p.name === request.playerName && !isSimBot(p)) : undefined;
+        const owner = request?.playerName ? world.getAllPlayers().find(p => p && p.name === request.playerName && !isSimBot(p)) : undefined;
         if (owner) system.runTimeout(() => { try { void openSettingsForm(owner); } catch {} }, 10);
       }
     }

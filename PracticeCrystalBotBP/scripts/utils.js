@@ -111,7 +111,9 @@ export function patchSnapToBlockCenter(location) {
 export function getAllPlayers() {
   // SimulatedPlayer(Bot)は"プレイヤー"として扱わない: ターゲット検索・占位判定・紹介メッセージ等の
   // 旧挙動(カスタムエンティティBot)と一致させるため除外する。
-  try { return world.getAllPlayers().filter(p => !isSimBot(p)); } catch { return []; }
+  // [0.5.6] 現行エンジンでは SimBot が getAllPlayers() に undefined として
+  // 混ざることがあるため、falsy 要素も除外する（Bot生存中に全コードが壊れるのを防ぐ）。
+  try { return world.getAllPlayers().filter(p => p && !isSimBot(p)); } catch { return []; }
 }
 export function getPlayerByName(name) {
   return getAllPlayers().find(p => p.name === name);
