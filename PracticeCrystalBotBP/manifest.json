@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.9.0: 1) Strict Elytra-Mace discipline (never flies when enemy holds/uses crystals or anchors, never flies underground/indoors, requires >=14 horizontal blocks, aborts dive immediately if enemy starts crystal combat); 2) Held-item & action synchronization (prevents sword/obsidian overwrite during crystal/anchor/ranged/mace sequences, swaps active item into hotbar & syncs selectedSlotIndex); 3) Smart 1-block front blast mitigation (reuses existing cover blocks instead of re-placing every time, strictly 1-block feet-level cover with no 2-high walls so movement stays wide open).",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.9.1: Hard preset now enables built-in debug logging by default (enabled/movement/combat/health) so freezes and internal decisions can be traced in the content log without any extra setup. v0.9.0: 1) Strict Elytra-Mace discipline (never flies when enemy holds/uses crystals or anchors, never flies underground/indoors, requires >=14 horizontal blocks, aborts dive immediately if enemy starts crystal combat); 2) Held-item & action synchronization (prevents sword/obsidian overwrite during crystal/anchor/ranged/mace sequences, swaps active item into hotbar & syncs selectedSlotIndex); 3) Smart 1-block front blast mitigation (reuses existing cover blocks instead of re-placing every time, strictly 1-block feet-level cover with no 2-high walls so movement stays wide open).",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
 			9,
-			0
+			1
 		],
 		"min_engine_version": [
 			1,
@@ -24,7 +24,7 @@
 			"version": [
 				0,
 				9,
-				0
+				1
 			]
 		}
 	],
