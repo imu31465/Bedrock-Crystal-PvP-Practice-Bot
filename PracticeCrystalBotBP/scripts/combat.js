@@ -1017,6 +1017,7 @@ export function handleSimCrossbowAttack(bot, target, config) {
       }
       if (method) {
         debugLog(bot, config, "ranged", `\u00a7d[Ranged] ${method} fired dist=${curD.toFixed(1)}`, true);
+        appendPersistentDebugLog("ranged", `[XBow] ${method} fired d=${curD.toFixed(1)}`);
         system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
       } else {
         selectBestSword(bot);
@@ -1227,6 +1228,7 @@ export function handleBowAttack(bot, target, config) {
       } catch { firedArrow = null; }
       if (firedArrow) {
         debugLog(bot, config, "ranged", `\u00a7b[Bow] fired dist=${curD.toFixed(1)}`, true);
+        appendPersistentDebugLog("ranged", `[Bow] fired d=${curD.toFixed(1)}`);
         trackBowArrow(bot, firedArrow, target, config);
         system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
       } else {
@@ -1348,6 +1350,7 @@ export function handleElytraMaceDive(bot, target, config) {
   const launchDir = normalize2D(vectorTo(bot.location, target.location));
   try { bot.applyImpulse({ x: launchDir.x * 0.5, y: 0.55, z: launchDir.z * 0.5 }); } catch {}
   debugLog(bot, config, "combat", `\u00a75[ElytraMace] dive開始 dist=${d.toFixed(1)}`, true);
+  appendPersistentDebugLog("combat", `[ElytraMace] dive開始 dist=${d.toFixed(1)}`);
 
   const step = () => {
     try {
@@ -1396,8 +1399,10 @@ export function handleElytraMaceDive(bot, target, config) {
           if (ok) {
             state.attacks++;
             debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 hit #${state.attacks}/${MACE_DIVE_ATTACKS_MAX} (engine melee)`, true);
+            appendPersistentDebugLog("combat", `[ElytraMace] hit #${state.attacks} d=${curD.toFixed(1)}`);
           } else {
             debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 attempt #${state.attempts} 不成立`, false);
+            appendPersistentDebugLog("combat", `[ElytraMace] attempt #${state.attempts} 不成立 d=${curD.toFixed(1)}`);
           }
           if (state.attempts >= MACE_DIVE_ATTACKS_MAX) { endElytraMaceDive(bot, config, state, "max-attack"); return; }
           // Wind Burstで跳ね返る可能性 → 12tickだけ再降下を許可
@@ -1445,6 +1450,7 @@ export function endElytraMaceDive(bot, config, state, reason = "end") {
     }
     try { selectBestSword(bot); } catch {}
     debugLog(bot, config, "combat", `\u00a75[ElytraMace] 終了(${reason}) attempts=${state.attempts ?? 0} hits=${state.attacks ?? 0} -> 復帰 (低位戦へ)`, true);
+    appendPersistentDebugLog("combat", `[ElytraMace] end(${reason}) attempts=${state.attempts ?? 0} hits=${state.attacks ?? 0}`);
   } catch {}
 }
 

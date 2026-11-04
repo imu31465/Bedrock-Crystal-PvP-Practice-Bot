@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.6.0 (combat rework part 1): bow/crossbow arrows spawn 1.5 blocks ahead of the muzzle (no more zero-range self-hits); elytra dive guarantees at least one mace attack per launch, up to 3 consecutive strikes, mace re-equipped before every strike, and a watchdog force-ends stalled dives (bot can no longer freeze after flying); crystal detonation above the target's head is banned except when surrounded, and feet-level explosions are heavily prioritized (existing-base auto-preference removed). v0.5.6: undefined-entry hardening for SimulatedPlayer in player iteration. v0.5.5: ender_crystal entity id fix for crystal-surf. v0.5.4: hard 0-value cooldowns preserved; hole-escape ladder; blast-mitigation block spam tamed. v0.5.3: namespaced /bot alias. v0.5.2: sourceEntity caller resolution.",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.6.1: elytra dive / bow / crossbow lifecycle is now also written to the persistent debug log (visible with /pvpbot:debugdump even when debug flags are off), so dive attempts, mace strikes and ranged shots can be verified from logs. v0.6.0: bow/crossbow arrows spawn ahead of the muzzle (no self-hits); elytra guarantees at least one mace strike per launch, up to 3 strikes, watchdog force-ends stalled dives; crystal detonation above the head banned (except surround), feet-level prioritized. v0.5.6: undefined-entry hardening for SimulatedPlayer. v0.5.5: ender_crystal entity id fix. v0.5.4: hard 0-value cooldowns preserved; hole escape; block spam tamed. v0.5.3: namespaced /bot alias. v0.5.2: sourceEntity caller resolution.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
 			6,
-			0
+			1
 		],
 		"min_engine_version": [
 			1,
@@ -24,7 +24,7 @@
 			"version": [
 				0,
 				6,
-				0
+				1
 			]
 		}
 	],
