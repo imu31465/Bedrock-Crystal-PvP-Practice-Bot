@@ -394,10 +394,17 @@ export function handlePearlMove(bot, target, config) {
 }
 
 // 射出したエンパの着地追跡: 弾道が落ち着いた/目標地点付近に達したらテレポート
+const botThrownPearlIds = new Set();
+
 function trackThrownPearl(bot, pearl, landingSpot, target, runtime, token) {
+  if (pearl?.id) botThrownPearlIds.add(String(pearl.id));
   let ticks = 0;
   const step = () => {
-    if (runtime.pendingPearlToken !== token) { try { pearl?.remove(); } catch {} return; }
+    if (runtime.pendingPearlToken !== token) {
+      if (pearl?.id) botThrownPearlIds.delete(String(pearl.id));
+      try { pearl?.remove(); } catch {}
+      return;
+    }
     try {
       ticks++;
       const alive = pearl?.isValid;
@@ -408,6 +415,7 @@ function trackThrownPearl(bot, pearl, landingSpot, target, runtime, token) {
         && pearl.location.y - landingSpot.y < 1.5;
       if (ticks < 6) { system.runTimeout(step, 1); return; }
       if (!alive || ticks >= 40 || speed2 < 0.05 || nearSpot) {
+        if (pearl?.id) botThrownPearlIds.delete(String(pearl.id));
         try { pearl?.remove(); } catch {}
         if (runtime.pendingPearlToken === token) {
           try { bot.teleport(landingSpot, { dimension: bot.dimension, facingLocation: target.location }); } catch {}
@@ -419,11 +427,125 @@ function trackThrownPearl(bot, pearl, landingSpot, target, runtime, token) {
       }
       system.runTimeout(step, 1);
     } catch {
+      if (pearl?.id) botThrownPearlIds.delete(String(pearl.id));
       try { pearl?.remove(); } catch {}
       runtime.pendingPearlToken = "";
     }
   };
   system.runTimeout(step, 1);
+}
+
+// ── [0.8.0] 敵が投げたエンダーパールを追従して着地点に先回り ──
+// 相手が飛ばしたエンパ(minecraft:ender_pearl)の弾道を外挿して着地点を即座に予測し、
+// 相手のエンパが着弾する前に自分もエンパ(または高速移動)で着地点へ先回りする。
+function predictEnemyPearlLandingSpot(dimension, pearl) {
+  try {
+    let x = pearl.location.x;
+    let y = pearl.location.y;
+    let z = pearl.location.z;
+    const v = pearl.getVelocity?.() ?? pearl.velocity ?? { x: 0, y: 0, z: 0 };
+    let vx = v.x, vy = v.y, vz = v.z;
+    if (Math.hypot(vx, vy, vz) < 0.08) return undefined;
+
+    for (let t = 1; t <= 45; t++) {
+      x += vx;
+      y += vy;
+      z += vz;
+      vy -= 0.03; // エンパ重力加速度
+      vx *= 0.99;
+      vy *= 0.99;
+      vz *= 0.99;
+      const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+      const hitBlock = getBlock(dimension, { x: bx, y: by, z: bz });
+      const belowBlock = getBlock(dimension, { x: bx, y: by - 1, z: bz });
+      if ((hitBlock && !isAirBlock(hitBlock)) || (belowBlock && !isAirBlock(belowBlock) && vy <= 0)) {
+        const standable = navFindStandableNear(dimension, { x: bx + 0.5, y: by + 1, z: bz + 0.5 }, 2, 4);
+        return standable ?? { x: bx + 0.5, y: by + 1, z: bz + 0.5 };
+      }
+    }
+    const fallback = navFindStandableNear(dimension, { x, y, z }, 3, 6);
+    return fallback ?? { x, y, z };
+  } catch { return undefined; }
+}
+
+export function handleEnemyPearlIntercept(bot, target, config) {
+  if (config.pearlFollow === false) return false;
+  const runtime = getRuntime(config.uid);
+  if (patchIsRecoveryActive(bot, runtime, config)) return false;
+
+  let enemyPearl = undefined;
+  try {
+    const pearls = bot.dimension.getEntities({
+      type: ENDER_PEARL_ID,
+      location: target.location,
+      maxDistance: 36,
+    });
+    for (const p of pearls) {
+      if (!p?.isValid) continue;
+      if (botThrownPearlIds.has(String(p.id))) continue;
+      // 自分が今投げたばかりのエンパ（自分の目の前にある等）は除外
+      if (runtime.pendingPearlToken && distance(p.location, bot.location) < 2.0 && distance(p.location, target.location) > 3.5) continue;
+      enemyPearl = p;
+      break;
+    }
+  } catch {}
+
+  if (!enemyPearl) {
+    if (runtime.pearlInterceptGoal && globalTick > Number(runtime.pearlInterceptUntilTick ?? 0)) {
+      runtime.pearlInterceptGoal = undefined;
+    }
+    return false;
+  }
+
+  const predictedSpot = predictEnemyPearlLandingSpot(bot.dimension, enemyPearl);
+  if (!predictedSpot) return false;
+  if (globalSettings.boundaryEnabled && !isLocationInsideBotBoundary(predictedSpot)) return false;
+
+  // 移動ゴールとしても即座にセット（徒歩・ダッシュでも着地点へ直行）
+  runtime.pearlInterceptGoal = predictedSpot;
+  runtime.pearlInterceptUntilTick = globalTick + 35;
+
+  // 既に追跡エンパを投げた同一エンパIDなら重複発射しない
+  const pearlEntityId = String(enemyPearl.id);
+  if (runtime.lastInterceptedPearlId === pearlEntityId) return true;
+  if (distance(bot.location, predictedSpot) < 4.5) return true;
+
+  // 相手のエンパより早く着地点へ先回りするため、クールダウンを無視して即エンパ発射＋高速到達
+  if (config.pearlMove !== false && equipMainhandItem(bot, ENDER_PEARL_ID, config) && consumeManagedItem(bot, config, ENDER_PEARL_ID, 1)) {
+    runtime.lastInterceptedPearlId = pearlEntityId;
+    runtime.lastPearlTick = globalTick;
+    const token = `${config.uid}:intercept:${globalTick}`;
+    runtime.pendingPearlToken = token;
+    faceBotToward(bot, predictedSpot);
+    let myPearl;
+    try {
+      const eye = addVector(bot.location, { x: 0, y: 1.45, z: 0 });
+      const toLand = vectorTo(eye, addVector(predictedSpot, { x: 0, y: 0.6, z: 0 }));
+      const dist = Math.hypot(toLand.x, toLand.y, toLand.z) || 1;
+      const dir = { x: toLand.x / dist, y: toLand.y / dist + 0.08, z: toLand.z / dist };
+      const speed = Math.max(1.4, Math.min(2.8, dist * 0.14));
+      myPearl = bot.dimension.spawnEntity(ENDER_PEARL_ID, eye);
+      if (myPearl?.id) botThrownPearlIds.add(String(myPearl.id));
+      try { myPearl.shoot({ direction: dir, speed }); }
+      catch { try { myPearl.applyImpulse({ x: dir.x * speed, y: dir.y * speed, z: dir.z * speed }); } catch {} }
+    } catch {}
+    debugLog(bot, config, "movement", `§d[PearlFollow] 敵エンパを検知 -> 着地点(${Math.floor(predictedSpot.x)},${Math.floor(predictedSpot.y)},${Math.floor(predictedSpot.z)})へ高速先回り！`, true);
+    appendPersistentDebugLog("movement", `${config.displayName}: enemy pearl intercept -> (${Math.floor(predictedSpot.x)},${Math.floor(predictedSpot.y)},${Math.floor(predictedSpot.z)})`);
+    // 相手のエンパ着弾より早く先回りするため、3tick後に着地点へ到達させる
+    system.runTimeout(() => {
+      try {
+        if (myPearl?.id) botThrownPearlIds.delete(String(myPearl.id));
+        try { myPearl?.remove(); } catch {}
+        if (!bot?.isValid) return;
+        if (runtime.pendingPearlToken === token) runtime.pendingPearlToken = "";
+        bot.teleport(predictedSpot, { dimension: bot.dimension, facingLocation: target?.isValid ? target.location : predictedSpot });
+        runtime.navPath = undefined;
+        selectBestSword(bot);
+      } catch {}
+    }, 3);
+    return true;
+  }
+  return true;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -830,16 +952,22 @@ function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirec
     return { handled: true };
   }
 
-  // 段階2: ジャンプで段差/隙間を越える
+  // 段階2: ジャンプ＋足場設置で段差/隙間を即座に越える
   if (stuckTicks < STUCK_STAGE_DETOUR_TICKS) {
+    if (config.blockPlacing !== false && tacticTryBridgeToward(bot, config, forwardDirection)) {
+      return { handled: true };
+    }
     if (moveHasStepObstacle(bot, forwardDirection) || moveTryJump(bot, runtime, config, MOVE_SPRINT_JUMP_BONUS, forwardDirection)) {
       return { handled: false }; // ジャンプしつつ前進継続
     }
     return { handled: false };
   }
 
-  // 段階3: 左右へ迂回
+  // 段階3: 左右へ迂回 or 橋架け
   if (stuckTicks < STUCK_STAGE_MINE_TICKS) {
+    if (config.blockPlacing !== false && tacticTryBridgeToward(bot, config, forwardDirection)) {
+      return { handled: true };
+    }
     const detour = moveComputeDetourDirection(bot, runtime, forwardDirection);
     if (detour) {
       runtime.navPath = undefined; // 経路も作り直す
@@ -848,10 +976,13 @@ function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirec
     }
   }
 
-  // 段階4: 掘って進む
+  // 段階4: 掘って進む or 足場を積む
   if (stuckTicks < STUCK_STAGE_PILLAR_TICKS) {
     if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) {
       debugLog(bot, config, "movement", `§e[脱出] 進路を採掘 stuck=${stuckTicks}`);
+      return { handled: true };
+    }
+    if (config.blockPlacing !== false && tacticTryPillarUp(bot, config, target)) {
       return { handled: true };
     }
   }
@@ -922,29 +1053,46 @@ export function handleMovement(bot, target, config) {
   const targetEyeLocation = addVector(target.location, { x: 0, y: 1.1, z: 0 });
 
   // ── 視線 ──
-  // 常にターゲットを見る。ただし瞬間的にスナップせず、人間らしく追従させる。
-  const inCombatRange = totalDistance <= SWORD_RANGE + 2.5;
-  const configuredTurnSpeed = Number(config.lookTurnSpeed ?? LOOK_TURN_SPEED_COMBAT);
-  const travelTurnSpeed = Math.max(6, configuredTurnSpeed * (LOOK_TURN_SPEED_TRAVEL / LOOK_TURN_SPEED_COMBAT));
-  const turnSpeed = config.humanize
-    ? (inCombatRange ? configuredTurnSpeed : travelTurnSpeed)
-    : (configuredTurnSpeed >= 180 ? undefined : configuredTurnSpeed);
-  const lookLocation = config.humanize ? patchApplyAimJitter(targetEyeLocation, config) : targetEyeLocation;
-  faceBotToward(bot, lookLocation, turnSpeed);
+  // [0.8.0] 弓・クロスボウ構え中は必ずその遠距離武器を握ったまま相手へ180度即時ロックオンする
+  if (runtime.pendingRangedDraw) {
+    if (runtime.rangedWeaponId) equipMainhandItem(bot, runtime.rangedWeaponId, config);
+    const rangedAim = addVector(target.location, { x: 0, y: 1.35, z: 0 });
+    faceBotToward(bot, rangedAim, 180);
+  } else {
+    // 常にターゲットを見る。ただし瞬間的にスナップせず、人間らしく追従させる。
+    const inCombatRange = totalDistance <= SWORD_RANGE + 2.5;
+    const configuredTurnSpeed = Number(config.lookTurnSpeed ?? LOOK_TURN_SPEED_COMBAT);
+    const travelTurnSpeed = Math.max(6, configuredTurnSpeed * (LOOK_TURN_SPEED_TRAVEL / LOOK_TURN_SPEED_COMBAT));
+    const turnSpeed = config.humanize
+      ? (inCombatRange ? configuredTurnSpeed : travelTurnSpeed)
+      : (configuredTurnSpeed >= 180 ? undefined : configuredTurnSpeed);
+    const lookLocation = config.humanize ? patchApplyAimJitter(targetEyeLocation, config) : targetEyeLocation;
+    faceBotToward(bot, lookLocation, turnSpeed);
+  }
 
   // ── 空中処理 ──
   const airborne = moveHandleAirborne(bot, runtime);
 
   // ── 目標地点の決定 ──
+  // [0.8.0] 1) 敵が投げたエンパの着地点予測 または 2) 空中浮上した敵の着地点予測 がある場合は最優先でその着地点へ先回りする
   let goal = tactic.goal;
+  if (!isRecovering) {
+    if (runtime.pearlInterceptGoal && globalTick <= Number(runtime.pearlInterceptUntilTick ?? 0)) {
+      goal = runtime.pearlInterceptGoal;
+    } else if (runtime.airInterceptGoal && globalTick <= Number(runtime.airInterceptUntilTick ?? 0)) {
+      goal = runtime.airInterceptGoal;
+    }
+  }
   if (!goal) {
     // 戦術が目標を出せなかった場合はターゲット周辺の立てる場所へ
     goal = navFindStandableNear(bot.dimension, target.location, 3, 4);
   }
 
   // ── 経路探索 ──
-  const needsPath = config.pathfinding !== false && goal && distance(bot.location, goal) > 1.6 &&
-    (tactic.mode !== TACTIC_ENGAGE || !navHasWalkableLine(bot.dimension, bot.location, goal, 1, 3));
+  // [0.8.0] 直線で歩ける場合や近距離(<=3.5ブロック)ではA*の遠回りウェイポイントを使わず最短で直進する
+  const directWalkable = goal ? navHasWalkableLine(bot.dimension, bot.location, goal, 1, 3) : false;
+  const needsPath = config.pathfinding !== false && goal && distance(bot.location, goal) > 3.5 &&
+    !directWalkable && tactic.mode !== TACTIC_ENGAGE;
   if (needsPath && moveShouldRepath(runtime, goal, config.uid)) {
     moveRequestPath(bot, runtime, goal, config);
   }

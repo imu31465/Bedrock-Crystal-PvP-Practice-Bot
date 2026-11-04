@@ -41,13 +41,13 @@ import {
   handleSwordCombo, handleCrystalCombo, handleAnchorCombo,
   chooseBestExplosiveAction, handleSimThreatDefense, handleSimCrossbowAttack, handleSimShieldGuard, handleAxeShieldBreak,
   handleBowAttack, handleElytraMaceDive, handleBedCombo, noteTargetHurt,
-  abortElytraMaceDive,
+  abortElytraMaceDive, handleAirborneTargetLandingTrap, applySlowFallingToTarget,
 } from "./combat.js";
 import { trySurroundTarget } from "./tactics.js";
 import { registerChainSpeedTracking, sendChainStats } from "./chain_speed.js";
 import {
   handleMovement, handlePearlMove, handleGoldenAppleBuff,
-  enforceBotBoundary,
+  enforceBotBoundary, handleEnemyPearlIntercept,
 } from "./movement.js";
 import { isSimBot, scheduleDespawn } from "./sim_port.js";
 import {
@@ -171,13 +171,37 @@ function tickBots() {
       ensureBotEquipmentIntegrity(bot, config);
     }
 
-    // Movement (エリトラ滑空中は移動エンジンを止める)
+    // Movement & Priority Actions (エリトラ滑空中は移動エンジンを止める)
     // [0.6.0] ダイブ・ウォッチドッグ: step() チェーンが途切れても state が残り続けて
     // 「動かない」状態になるのを防ぐ（5tick 進捗が無ければ強制終了して移動を再開）。
     const dashState = getRuntime(config.uid).elytraDashState;
     if (dashState?.active && globalTick - Number(dashState.lastStepTick ?? -9999) > 5) {
       try { abortElytraMaceDive(bot, config); } catch {}
     }
+
+    // [0.8.0] 1. 相手が盾を構えていたら、エリトラメイス中でも爆破ターン中でも即座に斧で殴って盾を割る！
+    handleAxeShieldBreak(bot, target, config);
+
+    // [0.8.0] 2. 相手が飛ばしたエンパを追従して着地点に先回り（徒歩移動より先に判定して即追従）
+    if (!getRuntime(config.uid).elytraDashState?.active) {
+      handleEnemyPearlIntercept(bot, target, config);
+    }
+
+    // [0.8.0] 3. 相手が上に飛んで行った場合、着地点を予測して先回り＋足元クリスタルコンボを設置
+    if (!getRuntime(config.uid).elytraDashState?.active) {
+      handleAirborneTargetLandingTrap(bot, target, config);
+    }
+
+    // [0.9.0] 4. エリトラ急降下:
+    // クリスタル/アンカー等の地上戦闘ができないほど十分に距離が開いており(14ブロック以上)、
+    // かつ地下・閉所ではなく、相手も爆発物を使っていない時のみ、移動前にエリトラで詰める。
+    const distToTarget = distance(bot.location, target.location);
+    if (!getRuntime(config.uid).elytraDashState?.active &&
+        !getRuntime(config.uid).shieldGuardState?.active &&
+        distToTarget >= Math.max(14, Number(config.elytraDistance ?? 14))) {
+      handleElytraMaceDive(bot, target, config);
+    }
+
     const diving = Boolean(getRuntime(config.uid).elytraDashState?.active);
     if (!diving) handleMovement(bot, target, config);
 
@@ -190,7 +214,7 @@ function tickBots() {
       // Defense (inbound projectiles / hostile explosives)
       void handleSimThreatDefense(bot, target, config).catch(() => {});
 
-      // Shield Guard (raise against the enemy's crystal)
+      // Shield Guard (raise against inbound projectile)
       void handleSimShieldGuard(bot, target, config);
     }
 
@@ -207,18 +231,24 @@ function tickBots() {
         } else {
           handleCrystalCombo(bot, target, config, explosiveAction.candidate);
         }
-        // 武器bash may also be executed during explosive turns (simultaneous attack — suppress the weapon attack of the dice roll lineage)
-        handleSwordCombo(bot, target, config);
+        // 爆発ターン中も盾割りは同時実行するが、剣コンボはクリスタル/アンカーの持ち物を上書きしないよう
+        // 爆発シーケンスが走っていない瞬間のみ実行する（行動と持ち物の不一致を防止）
+        handleAxeShieldBreak(bot, target, config);
+        if (!getRuntime(config.uid).pendingCrystal && !getRuntime(config.uid).pendingAnchor && !getRuntime(config.uid).pendingBed) {
+          handleSwordCombo(bot, target, config);
+        }
       } else {
-        // [B-3] サラウンド: 相手が静止していれば囲んでから撃つ
+        // [B-3] サラウンド: config.surroundTactic が ON の時のみ実行 (/bot hard では OFF)
         trySurroundTarget(bot, target, config);
         // 相手が盾を構えていたら斧で破解(5秒無効化 → クロスボウも再開)
         handleAxeShieldBreak(bot, target, config);
-        // [v0.5.0] エリトラ+メイス急降下 (上空滞留を廃した再設計版)
+        // [v0.9.0] エリトラ+メイス急降下（遠距離・地上オープン空間のみ）
         handleElytraMaceDive(bot, target, config);
-        // 弓で射撃(距離が離れている時)
+        // 低速落下の矢を撃つ(相手に低速落下が付いていない時のみ)
         handleBowAttack(bot, target, config);
-        handleSwordCombo(bot, target, config);
+        if (!getRuntime(config.uid).pendingRangedDraw) {
+          handleSwordCombo(bot, target, config);
+        }
         void handleSimCrossbowAttack(bot, target, config);
       }
     }
@@ -275,6 +305,17 @@ function onEntityHurt(event) {
   const entity = event.hurtEntity;
   // [B-4] 全エンティティの被弾tickを記録（i-frame明けジャスト起爆の判断用）
   noteTargetHurt(entity);
+  // [0.8.0] ターゲットが矢(projectile)で被弾した際にも確実に低速落下(Slow Falling)を付与
+  try {
+    const cause = event.damageSource?.cause ?? "";
+    const proj = event.damageSource?.damagingProjectile;
+    const attacker = event.damageSource?.damagingEntity;
+    if (entity && entity.typeId === "minecraft:player" && !isSimBot(entity)) {
+      if (cause === "projectile" || proj?.typeId === "minecraft:arrow") {
+        applySlowFallingToTarget(entity, attacker, attacker ? botConfigs[getBotUid(attacker)] : undefined, "arrowHitEvent");
+      }
+    }
+  } catch {}
   if ((entity?.typeId !== BOT_TYPE && !isSimBot(entity)) || !isEntityUsable(entity, BOT_TYPE)) return;
   const uid = getBotUid(entity);
   const config = botConfigs[uid];

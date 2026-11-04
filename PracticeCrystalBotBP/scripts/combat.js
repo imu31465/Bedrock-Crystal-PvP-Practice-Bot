@@ -162,19 +162,43 @@ function isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) {
   return targetDamage > selfDamage * 0.5;
 }
 
+function hasExistingFrontCoverBetween(bot, explosionLocation) {
+  const dist = distance(bot.location, explosionLocation);
+  if (dist < 1.8) return false;
+  const dir = normalize2D(vectorTo(bot.location, explosionLocation));
+  if (!dir || (Math.abs(dir.x) < 0.01 && Math.abs(dir.z) < 0.01)) return false;
+  const botFloor = floorLocation(bot.location);
+  const expFloor = floorLocation(explosionLocation);
+  for (const r of [0.95, 1.25, 1.55, 1.85]) {
+    const loc = {
+      x: Math.floor(bot.location.x + dir.x * r),
+      y: botFloor.y,
+      z: Math.floor(bot.location.z + dir.z * r),
+    };
+    if (loc.x === botFloor.x && loc.z === botFloor.z) continue;
+    if (loc.x === expFloor.x && loc.z === expFloor.z) continue;
+    try {
+      const b = getBlock(bot.dimension, loc);
+      if (b && !isAirBlock(b)) return true;
+    } catch {}
+  }
+  return false;
+}
+
 function findShieldBlock(bot, explosionLocation) {
   const dist = distance(bot.location, explosionLocation);
   if (dist < 1.8) return undefined;
+  // [0.9.0] 既に手前(自分〜爆心地の間、足元高さ1段)に遮蔽ブロックが存在するなら
+  // それをそのまま利用すればよく、新しいブロックを置かない（置きすぎによる行動範囲の狭まりを防止）
+  if (hasExistingFrontCoverBetween(bot, explosionLocation)) return undefined;
   const dir = normalize2D(vectorTo(bot.location, explosionLocation));
   if (!dir || (Math.abs(dir.x) < 0.01 && Math.abs(dir.z) < 0.01)) return undefined;
   const botFloor = floorLocation(bot.location);
   const expFloor = floorLocation(explosionLocation);
-  // [0.7.0] 手前遮蔽ブロックは「自分の足元〜腰の高さ(dy=0優先, 次点dy=1)」かつ
-  // 接地または隣接支持面がある座標を選ぶ（旧: dy=1固定で空中に浮き設置失敗していた）。
+  // [0.9.0] ダメージ軽減は高さ2ブロックである必要はないため、足元高さ(y = botFloor.y)の1ブロックのみに限定する！
   const candidates = [
     { x: Math.floor(bot.location.x + dir.x * 1.15), y: botFloor.y, z: Math.floor(bot.location.z + dir.z * 1.15) },
-    { x: Math.floor(bot.location.x + dir.x * 1.55), y: botFloor.y, z: Math.floor(bot.location.z + dir.z * 1.55) },
-    { x: Math.floor(bot.location.x + dir.x * 1.35), y: botFloor.y + 1, z: Math.floor(bot.location.z + dir.z * 1.35) },
+    { x: Math.floor(bot.location.x + dir.x * 1.5), y: botFloor.y, z: Math.floor(bot.location.z + dir.z * 1.5) },
   ];
   for (const loc of candidates) {
     if (loc.x === botFloor.x && loc.z === botFloor.z && (loc.y === botFloor.y || loc.y === botFloor.y + 1)) continue;
@@ -243,12 +267,17 @@ export function scanCrystalCandidates(bot, target, config) {
       
       let shieldBlock = undefined;
       if (config.blastMitigation) {
-        const candidateShield = findShieldBlock(bot, crystalLocation);
-        if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
-          // 自傷がある程度出る（>=1.5）か安全閾値を超える場合は、直前手前ブロック設置を予約
-          if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 1.5) {
-            shieldBlock = candidateShield;
-            selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
+        if (hasExistingFrontCoverBetween(bot, crystalLocation)) {
+          // 既に手前にブロックがあるなら新たに置かず、そのまま軽減効果として計算する
+          selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
+        } else {
+          const candidateShield = findShieldBlock(bot, crystalLocation);
+          if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
+            // 自傷が安全閾値を超える、または大ダメージ(>=3.5)のときだけ1ブロック置く
+            if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 3.5) {
+              shieldBlock = candidateShield;
+              selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
+            }
           }
         }
       }
@@ -319,12 +348,16 @@ export function scanAnchorCandidates(bot, target, config) {
       
       let shieldBlock = undefined;
       if (config.blastMitigation) {
-        const candidateShield = findShieldBlock(bot, explosionLocation);
-        if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
-          // 連続アンカー+手前ブロック(anchorSpam)有効時、または自傷軽減が必要な時は直前遮蔽ブロックを予約
-          if (config.anchorSpam !== false || !isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 1.0) {
-            shieldBlock = candidateShield;
-            selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "blockExplosion");
+        if (hasExistingFrontCoverBetween(bot, explosionLocation)) {
+          // 既に手前にブロックがあるならそのまま利用し、無駄に新しく置かない
+          selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "blockExplosion");
+        } else {
+          const candidateShield = findShieldBlock(bot, explosionLocation);
+          if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
+            if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 2.5) {
+              shieldBlock = candidateShield;
+              selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "blockExplosion");
+            }
           }
         }
       }
@@ -570,16 +603,21 @@ function buildLandingCandidate(bot, target, config, landing, groundFloorY) {
     const rawSelfDamage = estimateExplosionDamage(bot, crystalLocation, "crystal");
     const targetDamage = Math.max(4, patchCalculateExpectedHealthDamage(target, rawTargetDamage, "entityExplosion"));
     let selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage, "entityExplosion");
-    let shieldBlock = undefined;
-    if (config.blastMitigation) {
-      const candidateShield = findShieldBlock(bot, crystalLocation);
-      if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
-        if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 1.5) {
-          shieldBlock = candidateShield;
+      let shieldBlock = undefined;
+      if (config.blastMitigation) {
+        if (hasExistingFrontCoverBetween(bot, crystalLocation)) {
+          // 既に手前にブロックがあるならそのまま利用し、新しくブロックを置かない
           selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
+        } else {
+          const candidateShield = findShieldBlock(bot, crystalLocation);
+          if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
+            if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 3.5) {
+              shieldBlock = candidateShield;
+              selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
+            }
+          }
         }
       }
-    }
     if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) continue;
     return { location: base, placementMode, targetDamage, selfDamage, score: 999, shieldBlock, isDtap: true };
   }
@@ -722,17 +760,21 @@ export function handleAnchorCombo(bot, target, config, selectedCandidate) {
         const isFinal = stage === "final" || !pending.needsCharge;
         if (isFinal && config.blastMitigation) {
           const explosionLoc = getExplosionLocation(pending.base, "anchor");
-          const shieldLoc = (pending.shieldBlock && patchCanPlaceCombatBlock(bot, pending.shieldBlock))
-            ? pending.shieldBlock
-            : findShieldBlock(bot, explosionLoc);
-          if (shieldLoc && patchCanPlaceCombatBlock(bot, shieldLoc)) {
-            if (equipMainhandItem(bot, OBSIDIAN_ID, config) && consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
-              const { setBlockIdWithFallback } = await import("./explosion.js");
-              await setBlockIdWithFallback(bot.dimension, shieldLoc, OBSIDIAN_ID, "keep");
-              debugLog(bot, config, "combat", `§6[Anchor] 爆破直前に手前遮蔽ブロック設置 @${shieldLoc.x},${shieldLoc.y},${shieldLoc.z}`, true);
+          if (!hasExistingFrontCoverBetween(bot, explosionLoc)) {
+            const shieldLoc = (pending.shieldBlock && patchCanPlaceCombatBlock(bot, pending.shieldBlock))
+              ? pending.shieldBlock
+              : findShieldBlock(bot, explosionLoc);
+            if (shieldLoc && patchCanPlaceCombatBlock(bot, shieldLoc)) {
+              if (equipMainhandItem(bot, OBSIDIAN_ID, config) && consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
+                const { setBlockIdWithFallback } = await import("./explosion.js");
+                await setBlockIdWithFallback(bot.dimension, shieldLoc, OBSIDIAN_ID, "keep");
+                debugLog(bot, config, "combat", `§6[Anchor] 爆破直前に手前遮蔽ブロック(1段)設置 @${shieldLoc.x},${shieldLoc.y},${shieldLoc.z}`, true);
+              }
             }
           }
         }
+        // アンカー起爆の瞬間はアンカー以外のアイテム（剣など）に持ち替えて起爆操作を行う（グロウストーンや黒曜石を握ったままにしない）
+        equipMainhandItem(bot, "minecraft:netherite_sword", config);
         faceBotToward(bot, { x: pending.base.x + 0.5, y: pending.base.y + 0.5, z: pending.base.z + 0.5 });
         return true;
       },
@@ -871,8 +913,8 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
                   return;
                 }
               }
-              // [0.7.0] 3. クリスタル設置後、爆破する「直前」に手前に遮蔽ブロックを配置してから爆破する！
-              if (config.blastMitigation) {
+              // [0.9.0] 3. クリスタル設置後、爆破する「直前」に、手前に既存ブロックが無い場合のみ高さ1ブロックの遮蔽を配置してから爆破する！
+              if (config.blastMitigation && !hasExistingFrontCoverBetween(bot, crystalLocation)) {
                 const shieldLoc = (pending.shieldBlock && patchCanPlaceCombatBlock(bot, pending.shieldBlock))
                   ? pending.shieldBlock
                   : findShieldBlock(bot, crystalLocation);
@@ -880,10 +922,12 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
                   if (equipMainhandItem(bot, OBSIDIAN_ID, config) && consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
                     const { setBlockIdWithFallback } = await import("./explosion.js");
                     await setBlockIdWithFallback(bot.dimension, shieldLoc, OBSIDIAN_ID, "keep");
-                    debugLog(bot, config, "combat", `§e[Crystal] 爆破直前に手前遮蔽ブロック設置 @${shieldLoc.x},${shieldLoc.y},${shieldLoc.z}`, true);
+                    debugLog(bot, config, "combat", `§e[Crystal] 爆破直前に手前遮蔽ブロック(1段)設置 @${shieldLoc.x},${shieldLoc.y},${shieldLoc.z}`, true);
                   }
                 }
               }
+              // 起爆時はクリスタルまたは剣を手に持って叩く（黒曜石を持ったまま起爆しない）
+              equipMainhandItem(bot, END_CRYSTAL_ID, config);
               await runCrystalExplosionWithFallback(bot.dimension, pending.base, bot, resolvedCrystal);
               try { resolvedCrystal?.remove(); } catch {}
               selectBestSword(bot);
@@ -1007,6 +1051,9 @@ function hasHumanPlaceSupport(dimension, location) {
 async function placeEmergencyProtectBlock(bot, threatLocation, config, reason) {
   const dist = distance(bot.location, threatLocation);
   if (dist < 2.2) return false;
+  // [0.9.0] 既に手前(自分〜脅威の間、足元高さ1段)に遮蔽ブロックがあるならそれをそのまま利用し、
+  // 無駄にブロックを置かない（置きすぎによる行動範囲の狭まりを防止）
+  if (hasExistingFrontCoverBetween(bot, threatLocation)) return false;
   const dir = normalize2D(vectorTo(bot.location, threatLocation));
   if (!dir || (Math.abs(dir.x) < 0.01 && Math.abs(dir.z) < 0.01)) {
     // 脅威が真上/真下: 足元の隣接面が使える適当な方向へ
@@ -1017,8 +1064,8 @@ async function placeEmergencyProtectBlock(bot, threatLocation, config, reason) {
     y: Math.floor(bot.location.y + dy),
     z: Math.floor(bot.location.z + dir.z * r),
   });
+  // [0.9.0] ダメージ軽減は高さ2ブロックである必要はないため、足レベル(dy=0)の1ブロックのみに限定！
   const feetOptions = [candidateAt(1.0, 0), candidateAt(1.5, 0), candidateAt(2.0, 0)];
-  const headOptions = [candidateAt(1.0, 1), candidateAt(1.5, 1)];
   const botCell = floorLocation(bot.location);
   const canPlaceAt = (loc) => {
     try {
@@ -1038,15 +1085,9 @@ async function placeEmergencyProtectBlock(bot, threatLocation, config, reason) {
   };
   let placed = 0;
   let shieldLoc;
-  // 第1優先: 足レベル（爆発レイの大半を遮る）
+  // 足元高さの1ブロックのみ設置（頭レベルの2段目は置かない）
   for (const loc of feetOptions) {
     if (canPlaceAt(loc)) { if (await tryPlaceObsidian(loc)) { placed++; shieldLoc = loc; } break; }
-  }
-  // 第2優先: 頭レベル（2段遮蔽で exposure をさらに削る）
-  if (placed > 0) {
-    for (const loc of headOptions) {
-      if (canPlaceAt(loc)) { if (await tryPlaceObsidian(loc)) placed++; break; }
-    }
   }
   if (!placed) return false;
   selectBestSword(bot);
@@ -1139,7 +1180,7 @@ export function handleSimCrossbowAttack(bot, target, config) {
   // [P1][診断] クロスボウが発動しない原因を特定するゲートトレース (2秒毎)
   if (globalTick % 40 === 0) {
     const d0 = distance(bot.location, target.location);
-    debugLog(bot, config, "combat", `[XBowGate] combo=${config.crossbowCombo} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} shielded=${targetIsShielded(target)} xbowInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, "minecraft:crossbow")}`);
+    debugLog(bot, config, "combat", `[XBowGate] combo=${config.crossbowCombo} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} shielded=${targetIsShielded(target)} slowfall=${targetHasSlowFalling(target)} xbowInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, "minecraft:crossbow")}`);
   }
   if (!config.crossbowCombo) return false;
   if (isSpawnProtected(config.uid)) return false;
@@ -1147,43 +1188,54 @@ export function handleSimCrossbowAttack(bot, target, config) {
   if (runtime.pendingCrystal || runtime.pendingAnchor) return false;
   if (runtime.pendingRangedDraw) return false;
   if (runtime.shieldGuardState?.active) return false;
+  if (runtime.elytraDashState?.active) return false;
+  // [0.8.0] 低速落下の矢: 既に相手に低速落下が付与されている間、または低速落下の矢が飛翔中は撃たない
+  if (targetHasSlowFalling(target) || hasInflightSlowfallArrowForTarget(target)) return false;
   if (globalTick - Number(runtime.lastRangedTick ?? -9999) < CROSSBOW_COOLDOWN_TICKS) return false;
   const d = distance(bot.location, target.location);
-  if (d < 8 || d > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE * 3) return false;
+  if (d < 6 || d > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE * 3.5) return false;
   if (!patchHasCombatLineOfSight(bot, target)) return false;
   if (targetIsShielded(target)) { debugLog(bot, config, "ranged", "[Ranged] target shield up", false); return false; }
   runtime.lastRangedTick = globalTick;
   runtime.pendingRangedDraw = true;
+  runtime.rangedWeaponId = "minecraft:crossbow";
   const weaponId = "minecraft:crossbow";
   if (!equipMainhandItem(bot, weaponId, config)) {
     runtime.pendingRangedDraw = false;
+    runtime.rangedWeaponId = undefined;
     return false;
   }
-  const drawTicks = 20 + Math.floor(Math.random() * 7);
-  const aim = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.5, z: 0 }), config);
+  const drawTicks = 16 + Math.floor(Math.random() * 5);
+  const aim = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.4, z: 0 }), config);
   faceBotToward(bot, aim);
-  debugLog(bot, config, "ranged", `\u00a7d[Ranged] drawing ${drawTicks}t dist=${d.toFixed(1)}`, true);
+  startRangedDrawTracker(bot, target, config, weaponId, drawTicks);
+  debugLog(bot, config, "ranged", `\u00a7d[Ranged] 低速落下クロスボウ構え ${drawTicks}t dist=${d.toFixed(1)}`, true);
   system.runTimeout(() => {
     try {
       runtime.pendingRangedDraw = false;
+      runtime.rangedWeaponId = undefined;
       if (!bot?.isValid) { try { selectBestSword(bot); } catch {} return; }
+      if (!target?.isValid || targetHasSlowFalling(target)) { selectBestSword(bot); return; }
       const curD = distance(bot.location, target.location);
-      if (curD < 3 || curD > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE * 3.5) { selectBestSword(bot); return; }
-      const aimFresh = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.5, z: 0 }), config);
+      if (curD < 3 || curD > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE * 4) { selectBestSword(bot); return; }
+      // 発射瞬間も確実にクロスボウを握り、相手の未来位置(リード射撃)へ真正面を向く
+      equipMainhandItem(bot, weaponId, config);
+      const tVel = getEntityVelocitySafe(target);
+      const flightTime = Math.min(18, curD / 3.2);
+      const leadTarget = {
+        x: target.location.x + tVel.x * flightTime * 0.65,
+        y: target.location.y + 1.35 + Math.max(-0.4, Math.min(0.8, tVel.y * flightTime * 0.35)),
+        z: target.location.z + tVel.z * flightTime * 0.65,
+      };
+      const aimFresh = patchApplyAimJitter(leadTarget, config);
       faceBotToward(bot, aimFresh);
       let method = "";
       let firedArrow = null;
       try {
         const eye = addVector(bot.location, { x: 0, y: 1.55, z: 0 });
-        const drop = curD * curD * 0.0045;
+        const drop = curD * curD * 0.0042;
         const aimPoint = addVector(aimFresh, { x: 0, y: drop, z: 0 });
         const dir = normalizeVector3(vectorTo(eye, aimPoint));
-        // [0.7.0] 自ヒット完全防止:
-        // 1) SimulatedPlayer移動中や1.5ブロック程度では前進速度で自分の当たり判定が追いつき自傷していたため、
-        //    水平方向に2.2ブロック前方・頭上側(y+0.15)の自分のヒットボックス完全外から発射する。
-        // 2) 前方にブロックがある場合は誤射・跳ね返り自傷を防ぐため発射を中止する。
-        // 3) applyImpulse(質量依存で初速が足りず足元に落ちる環境がある)に加え、
-        //    projectile コンポーネントの shoot(dir * speed) を最優先で呼び出して確実に高速飛翔させる。
         const muzzle = {
           x: bot.location.x + dir.x * 2.2,
           y: bot.location.y + 1.55 + Math.max(-0.2, dir.y * 1.4),
@@ -1216,46 +1268,99 @@ export function handleSimCrossbowAttack(bot, target, config) {
           try { firedArrow.applyImpulse(velVec); shot = true; } catch {}
         }
         if (shot) {
-          // 初速が0のまま残って自分に当たる事故を防ぐため、1tick後にも速度を検証・補正
-          trackBowArrow(bot, firedArrow, target, config, velVec);
+          trackBowArrow(bot, firedArrow, target, config, velVec, true);
         } else {
           try { firedArrow.remove(); } catch {}
           firedArrow = null;
         }
       } catch { firedArrow = null; }
       if (firedArrow) {
-        method = "chargedShot";
+        method = "slowfallCrossbow";
       }
       if (method) {
         debugLog(bot, config, "ranged", `\u00a7d[Ranged] ${method} fired dist=${curD.toFixed(1)}`, true);
-        appendPersistentDebugLog("combat", `${config.displayName}: crossbow fired dist=${curD.toFixed(1)}`);
-        system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
+        appendPersistentDebugLog("combat", `${config.displayName}: slowfall crossbow fired dist=${curD.toFixed(1)}`);
+        system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 6);
       } else {
         selectBestSword(bot);
       }
     } catch {
-      try { runtime.pendingRangedDraw = false; selectBestSword(bot); } catch {}
+      try { runtime.pendingRangedDraw = false; runtime.rangedWeaponId = undefined; selectBestSword(bot); } catch {}
     }
   }, drawTicks);
   return true;
 }
 
-// ── Crossbow constants ──
-// [F-5] SLOWFALL_DURATION_TICKS / pendingSlowfallArrows / trackChargedArrow は削除。
-// 実体の矢はエンジンが命中・ダメージを処理するため、追跡と効果付与は不要。
+// ── Crossbow & Slow Falling constants ──
 const CROSSBOW_COOLDOWN_TICKS = 30;
+const SLOW_FALLING_ARROW_DURATION_TICKS = 200; // 低速落下の矢の効果時間 (10秒 = 200tick)
 
-function targetHasSlowFalling(target) {
+export function targetHasSlowFalling(target) {
   try {
-    if (target?.getEffect?.("slow_falling")) return true;
+    const eff = target?.getEffect?.("slow_falling") ?? target?.getEffect?.("minecraft:slow_falling");
+    const dur = Number(eff?.duration ?? eff?.durationTicks ?? 0);
+    if (eff && dur > 5) return true;
   } catch {}
   return false;
+}
+
+export function applySlowFallingToTarget(target, bot, config, sourceLabel = "arrow") {
+  try {
+    if (!target?.isValid) return false;
+    try {
+      target.addEffect("slow_falling", SLOW_FALLING_ARROW_DURATION_TICKS, { amplifier: 0, showParticles: true });
+    } catch {
+      patchRunDimensionCommandNoThrow(target.dimension, `effect "${target.name ?? target.nameTag ?? "@p"}" slow_falling 10 0 true`);
+    }
+    if (bot && config) {
+      debugLog(bot, config, "ranged", `\u00a7b[SlowFall] ${sourceLabel}命中 -> 相手に低速落下(10s)を付与！`, true);
+      appendPersistentDebugLog("combat", `${config.displayName}: applied slow_falling to target via ${sourceLabel}`);
+    }
+    return true;
+  } catch { return false; }
+}
+
+function getEntityVelocitySafe(entity) {
+  try {
+    const v = entity?.getVelocity?.() ?? entity?.velocity;
+    if (v && Number.isFinite(v.x)) return { x: v.x, y: v.y, z: v.z };
+  } catch {}
+  return { x: 0, y: 0, z: 0 };
+}
+
+function hasInflightSlowfallArrowForTarget(target) {
+  const tid = String(target?.id ?? "");
+  if (!tid) return false;
+  for (const entry of pendingBowArrows.values()) {
+    if (entry.slowfall && entry.targetId === tid && entry.arrow?.isValid) return true;
+  }
+  return false;
+}
+
+// [0.8.0] 弓・クロスボウ構え中は毎tick必ず武器を手に持ち、相手の方を正確にロックオンし続ける
+function startRangedDrawTracker(bot, target, config, weaponId, drawTicks) {
+  const runtime = getRuntime(config.uid);
+  let remaining = drawTicks;
+  const tickDraw = () => {
+    try {
+      if (!bot?.isValid || !runtime.pendingRangedDraw || remaining <= 0) return;
+      remaining--;
+      equipMainhandItem(bot, weaponId, config);
+      if (target?.isValid) {
+        const aim = addVector(target.location, { x: 0, y: 1.35, z: 0 });
+        faceBotToward(bot, aim);
+        setBotLookAt(bot, aim);
+      }
+      if (remaining > 0) system.runTimeout(tickDraw, 1);
+    } catch {}
+  };
+  system.runTimeout(tickDraw, 1);
 }
 
 // Human-discernible shield state: sneaking + holding shield in main/off hand
 const shieldDisableUntil = new Map(); // key: targetId(String) -> untilTick (axe break effect)
 
-function targetIsShielded(target) {
+export function targetIsShielded(target) {
   try {
     if (shieldDisableUntil.get(String(target?.id)) > globalTick) return false;
     if (!target?.isSneaking) return false;
@@ -1267,52 +1372,61 @@ function targetIsShielded(target) {
   return false;
 }
 
-// ── Axe Shield Break (招時は斧で盾を破壊する) ──
-const AXE_BREAK_COOLDOWN_TICKS = 25; // 人間可: 斧への持ち替えサイクル 1.25秒
+// ── Axe Shield Break (相手が盾を構えていたら持っている斧で殴って盾を無効化する — エリトラメイス中でも即発動) ──
+const AXE_BREAK_COOLDOWN_TICKS = 16; // 素早く斧へ持ち替えて盾を割る
 const SHIELD_DISABLE_DURATION_TICKS = 100; // バニラ準拠 5秒
 
 export function handleAxeShieldBreak(bot, target, config) {
   if (isSpawnProtected(config.uid)) return false;
   const runtime = getRuntime(config.uid);
   if (runtime.shieldGuardState?.active) return false;
-  if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingRangedDraw) return false;
   try {
     if (shieldDisableUntil.get(String(target?.id)) > globalTick) return false;
     if (!targetIsShielded(target)) return false;
   } catch { return false; }
-  if (distance(bot.location, target.location) > MAX_INTERACT_DISTANCE) return false;
+  const d = distance(bot.location, target.location);
+  const maxReach = runtime.elytraDashState?.active ? 5.6 : (MAX_INTERACT_DISTANCE + 0.5);
+  if (d > maxReach) return false;
   if (!patchHasCombatLineOfSight(bot, target)) return false;
   if (globalTick - Number(runtime.lastAxeBreakTick ?? -9999) < AXE_BREAK_COOLDOWN_TICKS) return false;
-  const axeId = selectBestAxe(bot);
-  if (!axeId) return false;
+  const axeId = selectBestAxe(bot) || "minecraft:netherite_axe";
   runtime.lastAxeBreakTick = globalTick;
   if (!equipMainhandItem(bot, axeId, config)) {
-    runtime.lastAxeBreakTick = globalTick - AXE_BREAK_COOLDOWN_TICKS + 5;
+    runtime.lastAxeBreakTick = globalTick - AXE_BREAK_COOLDOWN_TICKS + 4;
     return false;
   }
   faceBotToward(bot, addVector(target.location, { x: 0, y: 1.2, z: 0 }));
   tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.swing");
-  // [A-4/F-5] エンジン近接攻撃: 斧ダメージ・ノックバック・そして盾の5秒無効化
-  // (Bedrock 1.18.30+: 盾アップ中のヒットでエンジン側が無効化を処理) がすべて
-  // エンジン側で行われる。旧実装の applyDamage(7)+手動KB+手動無効化トラッキングの
-  // 「効果適用」は全廃し、shieldDisableUntil はAI判断用の信念記録のみに残す。
   let usedEngine = false;
-  // [P1][A-1] simulateAttack は存在しない。実在する attackEntity に置換
-  // （盾の5秒無効化もエンジン側で処理される。距離・LOSは呼出側で担保済み）。
   try {
     if (typeof bot.attackEntity === "function") { usedEngine = Boolean(bot.attackEntity(target)); }
     else if (typeof bot.attack === "function") { usedEngine = Boolean(bot.attack()); }
   } catch { usedEngine = false; }
   if (!usedEngine) {
-    const axeDamage = patchCalculateNetDamage(target, 7, "entityAttack"); // フォールバック
+    const axeDamage = patchCalculateNetDamage(target, 7, "entityAttack");
     patchApplyDamageWithFallback(target, axeDamage, "entityAttack", bot);
     const knock = normalize2D(vectorTo(bot.location, target.location));
     try { target.applyImpulse({ x: knock.x * 0.22, y: 0.04, z: knock.z * 0.22 }); } catch {}
   }
-  // AI判断用の記録（効果の適用は上記のエンジン攻撃が担う）
+  // プレイヤー側の盾クールダウンもエンジン＋コマンド双方で確実に発火させる
+  try {
+    if (target.typeId === "minecraft:player") {
+      patchRunDimensionCommandNoThrow(target.dimension, `playsound random.break @a[x=${quoteCoord(target.location.x)},y=${quoteCoord(target.location.y)},z=${quoteCoord(target.location.z)},r=16]`);
+    }
+  } catch {}
   shieldDisableUntil.set(String(target.id), globalTick + SHIELD_DISABLE_DURATION_TICKS);
-  debugLog(bot, config, "combat", `\u00a76[Axe] 盾破解り ${axeId.replace("minecraft:", "")} mode=${usedEngine ? "engine" : "script"} disable=5s`, true);
-  system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 4);
+  const inDive = Boolean(runtime.elytraDashState?.active);
+  debugLog(bot, config, "combat", `\u00a76[Axe] 盾割り発動！ ${axeId.replace("minecraft:", "")} dive=${inDive} mode=${usedEngine ? "engine" : "script"} disable=5s`, true);
+  appendPersistentDebugLog("combat", `${config.displayName}: axe shield break dive=${inDive} dist=${d.toFixed(1)}`);
+  system.runTimeout(() => {
+    try {
+      if (getRuntime(config.uid).elytraDashState?.active) {
+        equipMainhandItem(bot, MACE_ID, config);
+      } else {
+        selectBestSword(bot);
+      }
+    } catch {}
+  }, 2);
   return true;
 }
 
@@ -1350,7 +1464,7 @@ export function handleSimShieldGuard(bot, target, config) {
   if (state.active) {
     if (globalTick - state.since >= SHIELD_GUARD_MAX_HOLD_TICKS) { releaseShieldGuard(bot, config, runtime, "timeout"); return; }
     // [F-3] 盾の維持: スニーク状態を維持する（Bedrockの実操作）
-    if (globalTick - Number(state.lastRaiseTick ?? state.since) >= 10) {
+    if (globalTick - Number(state.lastRaiseTickick - Number(state.lastRaiseTick ?? state.since) >= 10) {
       state.lastRaiseTick = globalTick;
       try { bot.isSneaking = true; } catch {}
       try { bot.useItem?.(new ItemStack("minecraft:shield", 1)); } catch {}
@@ -1374,7 +1488,7 @@ export function handleSimShieldGuard(bot, target, config) {
   debugLog(bot, config, "guard", `\u00a7e[Shield] raise vs projectile sneak=${raised} dist=${distance(bot.location, projectile.location).toFixed(1)}`, true);
 }
 
-// ── Bow Attack (遠距離からの射撃攻撃) ──
+// ── Bow Attack (遠距離からの低速落下の矢による射撃攻撃) ──
 const BOW_COOLDOWN_TICKS = 40;
 const BOW_MAX_RANGE = 48;
 const BOW_ARROW_TRACK_MAX_TICKS = 60;
@@ -1384,7 +1498,7 @@ export function handleBowAttack(bot, target, config) {
   // [P1][診断] 弓が発動しない原因を特定するゲートトレース (2秒毎)
   if (globalTick % 40 === 0) {
     const d0 = distance(bot.location, target.location);
-    debugLog(bot, config, "combat", `[BowGate] combo=${config.bowCombo} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} shielded=${targetIsShielded(target)} bowInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, "minecraft:bow")}`);
+    debugLog(bot, config, "combat", `[BowGate] combo=${config.bowCombo} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} shielded=${targetIsShielded(target)} slowfall=${targetHasSlowFalling(target)} bowInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, "minecraft:bow")}`);
   }
   if (!config.bowCombo) return false;
   if (isSpawnProtected(config.uid)) return false;
@@ -1392,43 +1506,54 @@ export function handleBowAttack(bot, target, config) {
   if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingRangedDraw) return false;
   if (runtime.shieldGuardState?.active) return false;
   if (runtime.elytraDashState?.active) return false;
+  // [0.8.0] 低速落下の矢: 既に相手に低速落下が付いている間（または低速落下の矢が飛翔中）は効果が切れるまで撃たない
+  if (targetHasSlowFalling(target) || hasInflightSlowfallArrowForTarget(target)) return false;
   if (globalTick - Number(runtime.lastBowTick ?? -9999) < BOW_COOLDOWN_TICKS) return false;
   const d = distance(bot.location, target.location);
-  if (d < Math.max(8, Number(config.bowDistance ?? 16)) || d > BOW_MAX_RANGE) return false;
+  if (d < Math.max(6, Number(config.bowDistance ?? 10)) || d > BOW_MAX_RANGE) return false;
   if (!patchHasCombatLineOfSight(bot, target)) return false;
   if (targetIsShielded(target)) { debugLog(bot, config, "ranged", "[Bow] target shield up", false); return false; }
   runtime.lastBowTick = globalTick;
   runtime.pendingRangedDraw = true;
+  runtime.rangedWeaponId = "minecraft:bow";
   if (!equipMainhandItem(bot, "minecraft:bow", config)) {
     runtime.pendingRangedDraw = false;
+    runtime.rangedWeaponId = undefined;
     runtime.lastBowTick = globalTick - BOW_COOLDOWN_TICKS + 10;
     return false;
   }
-  const drawTicks = 18 + Math.floor(Math.random() * 4);
-  const aim = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.5, z: 0 }), config);
+  const drawTicks = 16 + Math.floor(Math.random() * 4);
+  const aim = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.4, z: 0 }), config);
   faceBotToward(bot, aim);
-  debugLog(bot, config, "ranged", `\u00a7b[Bow] drawing ${drawTicks}t dist=${d.toFixed(1)}`, true);
+  startRangedDrawTracker(bot, target, config, "minecraft:bow", drawTicks);
+  debugLog(bot, config, "ranged", `\u00a7b[Bow] 低速落下弓を構え ${drawTicks}t dist=${d.toFixed(1)}`, true);
   system.runTimeout(() => {
     try {
       runtime.pendingRangedDraw = false;
+      runtime.rangedWeaponId = undefined;
       if (!bot?.isValid) { try { selectBestSword(bot); } catch {} return; }
+      if (!target?.isValid || targetHasSlowFalling(target)) { selectBestSword(bot); return; }
       const curD = distance(bot.location, target.location);
-      if (curD < 4 || curD > BOW_MAX_RANGE * 1.2) { selectBestSword(bot); return; }
-      const aimFresh = patchApplyAimJitter(addVector(target.location, { x: 0, y: 1.5, z: 0 }), config);
+      if (curD < 3.5 || curD > BOW_MAX_RANGE * 1.2) { selectBestSword(bot); return; }
+      // 発射直前にも必ず弓を握り、相手の未来位置(リード射撃)へ視線を合わせて発射
+      equipMainhandItem(bot, "minecraft:bow", config);
+      const tVel = getEntityVelocitySafe(target);
+      const flightTime = Math.min(18, curD / 3.4);
+      const leadTarget = {
+        x: target.location.x + tVel.x * flightTime * 0.65,
+        y: target.location.y + 1.35 + Math.max(-0.4, Math.min(0.8, tVel.y * flightTime * 0.35)),
+        z: target.location.z + tVel.z * flightTime * 0.65,
+      };
+      const aimFresh = patchApplyAimJitter(leadTarget, config);
       faceBotToward(bot, aimFresh);
       let firedArrow = null;
       try {
         const eye = addVector(bot.location, { x: 0, y: 1.55, z: 0 });
-        const drop = curD * curD * 0.0045;
+        const drop = curD * curD * 0.0042;
         const aimPoint = addVector(aimFresh, { x: 0, y: drop, z: 0 });
         const delta = vectorTo(eye, aimPoint);
         const len = Math.hypot(delta.x, delta.y, delta.z) || 1;
         const dir = { x: delta.x / len, y: delta.y / len, z: delta.z / len };
-        // [0.7.0] 自ヒット完全防止:
-        // 自分のヒットボックス内(eye)へのフォールバックを完全廃止し、2.2ブロック前方から射出する。
-        // 前方が固体ブロックで塞がれている場合は射撃を中止する（跳ね返り自傷防止）。
-        // さらに projectile コンポーネントの shoot(velocityVec) を最優先で使い、
-        // 飛距離ゼロで自分の足元に落ちて全部自分に当たる問題を根絶する。
         const muzzle = {
           x: bot.location.x + dir.x * 2.2,
           y: bot.location.y + 1.55 + Math.max(-0.2, dir.y * 1.4),
@@ -1462,33 +1587,52 @@ export function handleBowAttack(bot, target, config) {
         }
         if (!shot) { try { firedArrow.remove(); } catch {} firedArrow = null; }
         if (firedArrow) {
-          trackBowArrow(bot, firedArrow, target, config, velVec);
+          trackBowArrow(bot, firedArrow, target, config, velVec, true);
         }
       } catch { firedArrow = null; }
       if (firedArrow) {
-        debugLog(bot, config, "ranged", `\u00a7b[Bow] fired dist=${curD.toFixed(1)}`, true);
-        appendPersistentDebugLog("combat", `${config.displayName}: bow fired dist=${curD.toFixed(1)}`);
-        system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
+        debugLog(bot, config, "ranged", `\u00a7b[Bow] 低速落下の矢を発射 dist=${curD.toFixed(1)}`, true);
+        appendPersistentDebugLog("combat", `${config.displayName}: slowfall bow fired dist=${curD.toFixed(1)}`);
+        system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 6);
       } else {
         selectBestSword(bot);
       }
     } catch {
-      try { runtime.pendingRangedDraw = false; selectBestSword(bot); } catch {}
+      try { runtime.pendingRangedDraw = false; runtime.rangedWeaponId = undefined; selectBestSword(bot); } catch {}
     }
   }, drawTicks);
   return true;
 }
 
-function trackBowArrow(bot, arrow, target, config, initialVel) {
-  // [0.7.0] 矢の初速保証＆自傷防止ガード:
-  // 発射直後(ticks<=2)に初速が乗っていない場合は再度速度を付与し、
-  // 万一Bot自身のヒットボックス内(距離<1.1)へ逆流・滞留した場合は即消去して自傷を防ぐ。
-  const entry = { arrow, ticks: 0 };
+function trackBowArrow(bot, arrow, target, config, initialVel, slowfall = true) {
+  // [0.8.0] 矢の初速保証・自傷防止ガード・低速落下(Slow Falling)命中付与:
+  const entry = {
+    arrow,
+    ticks: 0,
+    slowfall,
+    targetId: String(target?.id ?? ""),
+    targetEntity: target,
+    botId: String(bot?.id ?? ""),
+    applied: false,
+  };
   pendingBowArrows.set(String(arrow.id), entry);
   const step = () => {
     try {
-      if (!entry.arrow?.isValid) { pendingBowArrows.delete(String(arrow.id)); return; }
+      const liveTarget = entry.targetEntity;
+      if (!entry.arrow?.isValid) {
+        // 矢がターゲット付近で消滅(=直撃)していたら低速落下を付与
+        if (entry.slowfall && !entry.applied && liveTarget?.isValid && entry.lastLoc) {
+          const hitDist = distance(entry.lastLoc, addVector(liveTarget.location, { x: 0, y: 0.9, z: 0 }));
+          if (hitDist <= 2.4 && !targetIsShielded(liveTarget)) {
+            entry.applied = true;
+            applySlowFallingToTarget(liveTarget, bot, config, "bow/crossbow");
+          }
+        }
+        pendingBowArrows.delete(String(arrow.id));
+        return;
+      }
       entry.ticks++;
+      entry.lastLoc = { ...entry.arrow.location };
       if (entry.ticks <= 2 && initialVel) {
         try {
           const v = entry.arrow.getVelocity?.() ?? entry.arrow.velocity ?? { x: 0, y: 0, z: 0 };
@@ -1501,6 +1645,16 @@ function trackBowArrow(bot, arrow, target, config, initialVel) {
             }
           }
         } catch {}
+      }
+      // ターゲットのヒットボックスに到達したら低速落下を付与
+      if (entry.slowfall && !entry.applied && liveTarget?.isValid) {
+        const dx = entry.arrow.location.x - liveTarget.location.x;
+        const dz = entry.arrow.location.z - liveTarget.location.z;
+        const dy = entry.arrow.location.y - (liveTarget.location.y + 0.9);
+        if (Math.hypot(dx, dz) <= 1.25 && Math.abs(dy) <= 1.45 && !targetIsShielded(liveTarget)) {
+          entry.applied = true;
+          applySlowFallingToTarget(liveTarget, bot, config, "bow/crossbow");
+        }
       }
       if (bot?.isValid && entry.ticks >= 2 && distance(entry.arrow.location, bot.location) < 1.05) {
         try { entry.arrow.remove(); } catch {}
@@ -1520,33 +1674,77 @@ function trackBowArrow(bot, arrow, target, config, initialVel) {
   system.runTimeout(step, 1);
 }
 
-// ── [v0.5.0] Elytra + Mace Dive（エリトラ急降下メイス攻撃）──
-// ユーザー実機指摘の是正: 旧 Elytra Dash は最長30tick(1.5秒)上空に滞留し続け、
-// CrystalPvPの「低位有利」メタと真逆で被弾を最大化していた（上にいるほど相手の
-// クリスタル爆発のexposureが増す）。加えて空中は遮蔽設置もできず、攻撃もしない
-// 「ただ標的になる時間」だった。
-// 新設計: エリトラは「メイス落下攻撃の到達手段」に限定する。
-//   1. 発進ゲート: 相手の近くに敵クリスタル/チャージ済みアンカーがある時は不発
-//      (浮上して食らう場面を作らない)。メイス未所持でも不発。
-//   2. 上昇は最短 (上限10tick・高度は相手+7)。上昇中に相手が起爆源を置いたら即降下。
-//   3. 降下: メイス装備で真下へ急降下し、距離3以内で attackEntity() を実行。
-//      落下ダメージボーナス・Wind Burstの跳ね返りはすべてエンジン計算。
-//      (メイスの落下攻撃仕様はエンジン側が持つため、スクリプトは攻撃操作のみ)
-//   4. 攻撃後は即チェスト/剣を復帰し、遮蔽設置を試みて通常戦闘(低位)へ戻る。
-//      Wind Burstで跳ね返った場合は1回だけ再急降下を許可する。
+// ── [v0.9.0] Elytra + Mace Dive（エリトラ急降下メイス攻撃）──
+// ユーザー指摘の是正:
+//   1. 「相手がクリスタルなどをやっていて上にいると圧倒的に不利なのにエリトラを使う」
+//   2. 「地下で戦っていて大して距離が開いていないのにエリトラをわざわざ使う」
+// これらはBotが弱体化する最大の原因だったため、以下の厳格な発進条件を設ける:
+//   - 最小距離ゲートを水平距離 14ブロック以上 (3D距離も14以上) に引き上げ、近〜中距離戦や地下の接近戦では絶対に使わない。
+//   - 相手が爆発物（クリスタル・アンカー・黒曜石・グロウストーン）を手に持っている／直近で使っている、または周囲8ブロック以内にクリスタルやアンカーが存在する場合は一切飛ばない（上空はクリスタル爆風の被弾が最大になるため）。
+//   - 地下・洞窟・天井がある場所（自分の頭上10ブロック、相手の頭上8ブロック、および中間地点の頭上8ブロックに天井・障害物がある場所）では絶対にエリトラを使わない。
+//   - 飛行中も相手が爆発物を構えるかクリスタル・アンカーを置いた瞬間に即座にエリトラを解除して地上戦（低位）へ戻る。
 const ELYTRA_DASH_COOLDOWN_TICKS = 160; // 8秒
-const ELYTRA_SKY_CHECK_BLOCKS = 7;
+const ELYTRA_SKY_CHECK_BLOCKS = 10;
+const ELYTRA_MIN_HORIZONTAL_DISTANCE = 14;
+
+function isTargetUsingOrNearExplosives(bot, target) {
+  try {
+    // 1) 相手がメインハンド/オフハンドに爆発関連アイテムを持っている場合はクリスタル戦中なので飛ばない
+    const eq = target.getComponent?.("minecraft:equippable");
+    const main = eq?.getEquipment?.(EquipmentSlot.Mainhand)?.typeId;
+    const off = eq?.getEquipment?.(EquipmentSlot.Offhand)?.typeId;
+    const explosiveItems = new Set([END_CRYSTAL_ID, OBSIDIAN_ID, RESPAWN_ANCHOR_ID, GLOWSTONE_ID]);
+    if ((main && explosiveItems.has(main)) || (off && explosiveItems.has(off))) return true;
+
+    // 2) 相手またはBotの周囲8ブロック以内にエンドクリスタルがある場合は飛ばない
+    for (const entity of bot.dimension.getEntities({ location: target.location, maxDistance: 8 })) {
+      if (entity.typeId === END_CRYSTAL_ENTITY_ID) return true;
+    }
+    for (const entity of bot.dimension.getEntities({ location: bot.location, maxDistance: 7 })) {
+      if (entity.typeId === END_CRYSTAL_ENTITY_ID) return true;
+    }
+
+    // 3) 相手の周囲にリスポーンアンカーまたは黒曜石基盤がある場合はクリスタル/アンカー交戦中なので飛ばない
+    const tf = floorLocation(target.location);
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const b = getBlock(bot.dimension, { x: tf.x + dx, y: tf.y + dy, z: tf.z + dz });
+          if (!b) continue;
+          if (b.typeId === RESPAWN_ANCHOR_ID) return true;
+        }
+      }
+    }
+  } catch { return true; }
+  return false;
+}
+
+function hasOpenSkyForElytra(bot, target) {
+  try {
+    // 地下・洞窟・室内判定: 自分の頭上10ブロック、相手の頭上8ブロック、中間地点の頭上8ブロックが全て空間でなければ地下/閉所とみなして飛ばない
+    for (let h = 1; h <= ELYTRA_SKY_CHECK_BLOCKS; h++) {
+      if (isSolidBlock(getBlock(bot.dimension, addVector(bot.location, { x: 0, y: h, z: 0 })))) return false;
+    }
+    for (let h = 1; h <= 8; h++) {
+      if (isSolidBlock(getBlock(bot.dimension, addVector(target.location, { x: 0, y: h, z: 0 })))) return false;
+    }
+    const mid = {
+      x: (bot.location.x + target.location.x) * 0.5,
+      y: Math.max(bot.location.y, target.location.y),
+      z: (bot.location.z + target.location.z) * 0.5,
+    };
+    for (let h = 1; h <= 8; h++) {
+      if (isSolidBlock(getBlock(bot.dimension, addVector(mid, { x: 0, y: h, z: 0 })))) return false;
+    }
+    return true;
+  } catch { return false; }
+}
 
 export function handleElytraMaceDive(bot, target, config) {
   // [P1][診断] 急降下が発動しない原因を特定するゲートトレース (2秒毎)
   if (globalTick % 40 === 0) {
     const d0 = distance(bot.location, target.location);
-    let skyFree = true;
-    try {
-      for (let h = 1; h <= ELYTRA_SKY_CHECK_BLOCKS; h++) {
-        if (isSolidBlock(getBlock(bot.dimension, addVector(bot.location, { x: 0, y: h, z: 0 })))) { skyFree = false; break; }
-      }
-    } catch { skyFree = false; }
+    const skyFree = hasOpenSkyForElytra(bot, target);
     const traceRuntime = getRuntime(config.uid);
     debugLog(bot, config, "combat", `[DiveGate] dash=${config.elytraDash} maceCombo=${config.maceCombo} cd=${Math.max(0, ELYTRA_DASH_COOLDOWN_TICKS - (globalTick - Number(traceRuntime.lastElytraDashTick ?? -9999)))} d=${d0.toFixed(1)} los=${patchHasCombatLineOfSight(bot, target)} skyFree=${skyFree} hp=${patchGetCurrentHealthValue(bot).toFixed(1)} maceInv=${countItemInContainer(bot.getComponent(EntityComponentTypes.Inventory)?.container, MACE_ID)}`);
   }
@@ -1559,38 +1757,27 @@ export function handleElytraMaceDive(bot, target, config) {
   if (runtime.elytraDashState?.active) return false;
   if (globalTick - Number(runtime.lastElytraDashTick ?? -9999) < ELYTRA_DASH_COOLDOWN_TICKS) return false;
   const d = distance(bot.location, target.location);
-  if (d < Math.max(6, Number(config.elytraDistance ?? 12))) return false;
+  const horizD = Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z);
+  const minRequiredDist = Math.max(ELYTRA_MIN_HORIZONTAL_DISTANCE, Number(config.elytraDistance ?? 14));
+  // [0.9.0] 距離が十分開いていない時（水平14ブロック未満）はわざわざエリトラを使わない
+  if (d < minRequiredDist || horizD < ELYTRA_MIN_HORIZONTAL_DISTANCE) return false;
+  // [0.9.0] 自分が爆発攻撃できる距離や直近で爆発コンボ中なら地上クリスタル戦を優先し、絶対に上へ飛ばない
+  if (globalTick - Number(runtime.lastCrystalTick ?? -9999) < 30 ||
+      globalTick - Number(runtime.lastAnchorTick ?? -9999) < 30) return false;
   if (!patchHasCombatLineOfSight(bot, target)) return false;
-  // ゲート: メイスを所持している事 (コンボの前提)
-  if (!equipMainhandItem(bot, MACE_ID, config)) return false;
-  // ゲート: 相手の近くに既に起爆源があるなら浮上しない (上空は被弾が最大になる)
-  try {
-    for (const entity of bot.dimension.getEntities({ location: target.location, maxDistance: 5 })) {
-      if (entity.typeId === END_CRYSTAL_ENTITY_ID) return false;
-    }
-    const tf = floorLocation(target.location);
-    for (const off of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]) {
-      const block = getBlock(bot.dimension, { x: tf.x + off[0], y: tf.y, z: tf.z + off[1] });
-      if (block?.typeId === RESPAWN_ANCHOR_ID) {
-        let charge = 0;
-        try { charge = block.permutation?.getState?.("respawn_anchor_charge") ?? 0; } catch {}
-        if (charge > 0) return false;
-      }
-    }
-  } catch { return false; }
-  // ゲート: 自分頭上の空き (発進のため)
-  try {
-    for (let h = 1; h <= ELYTRA_SKY_CHECK_BLOCKS; h++) {
-      if (isSolidBlock(getBlock(bot.dimension, addVector(bot.location, { x: 0, y: h, z: 0 })))) return false;
-    }
-  } catch { return false; }
+  // [0.9.0] 相手がクリスタル/アンカー戦をしている時（または周囲に爆発物がある時）は上空に行くと圧倒的に不利なので飛ばない
+  if (isTargetUsingOrNearExplosives(bot, target)) return false;
+  // [0.9.0] 地下・天井がある空間では飛ばない
+  if (!hasOpenSkyForElytra(bot, target)) return false;
+  // 自傷リスク: HPが低い状態での浮上はしない (落下攻撃前に撃ち落とされる)
+  if (patchGetCurrentHealthValue(bot) < 12) return false;
   const equippable = getEquippableComponent(bot);
   if (!equippable) return false;
   let chestItem;
   try { chestItem = equippable.getEquipment?.(EquipmentSlot.Chest); } catch {}
   if (chestItem?.typeId === "minecraft:elytra") return false;
-  // 自傷リスク: HPが低い状態での浮上はしない (落下攻撃前に撃ち落とされる)
-  if (patchGetCurrentHealthValue(bot) < 10) return false;
+  // 実際に飛ぶことが確定してから初めてメイスへ持ち替える（不発時にメイスを一瞬チラつかせる不具合の解消）
+  if (!equipMainhandItem(bot, MACE_ID, config)) return false;
   runtime.lastElytraDashTick = globalTick;
   const state = {
     active: true, phase: "rise", ticks: 0, attacks: 0, attempts: 0,
@@ -1646,6 +1833,22 @@ export function handleElytraMaceDive(bot, target, config) {
       const heightDiff = bot.location.y - targetLoc.y;
       const curD = distance(bot.location, targetLoc);
       const dirToTarget = normalize2D(vectorTo(bot.location, targetLoc));
+
+      // [0.9.0] エリトラ飛行中に相手がクリスタル/アンカー戦を始めたら、上空は圧倒的に不利なので即座にエリトラを解除して地上戦（低位）へ戻る！
+      if (isTargetUsingOrNearExplosives(bot, target)) {
+        endElytraMaceDive(bot, config, state, "abort-explosive-threat");
+        return;
+      }
+
+      // [0.8.0] エリトラメイス飛行中でも、相手が盾を構えていたら斧に持ち替えて即座に盾を割る！
+      if (targetIsShielded(target) && curD <= 5.6) {
+        if (handleAxeShieldBreak(bot, target, config)) {
+          equipMainhandItem(bot, MACE_ID, config);
+        }
+      } else {
+        // 盾割りでない時は確実にメイスを手に持ち続ける（行動と持ち物の不一致を防止）
+        equipMainhandItem(bot, MACE_ID, config);
+      }
 
       if (state.phase === "rise") {
         // 上昇中に相手が起爆源を設置したら即急降下へ (上空滞留の被弾を断つ)
@@ -1780,3 +1983,135 @@ export function abortElytraMaceDive(bot, config) {
     if (state) endElytraMaceDive(bot, config, state, "watchdog");
   } catch {}
 }
+
+// ── [0.8.0] 敵の空中浮上に対する着地点先回りクリスタルコンボ ──
+// 相手が上に飛んで行ったとき（エリトラ・ロケット・Wind Burst・爆発KB等で浮上中）、
+// 重力・摩擦と地面高さから着地点を予測し、着地点へ先回り（必要ならエンパも併用）して
+// 着地地点の足元黒曜石＋クリスタルを先行設置・着地に合わせて連続クリスタルコンボを決める。
+function predictAirborneTargetLandingSpot(target) {
+  try {
+    const dim = target.dimension;
+    let x = target.location.x;
+    let y = target.location.y;
+    let z = target.location.z;
+    const v = getEntityVelocitySafe(target);
+    let vx = v.x, vy = v.y, vz = v.z;
+    // 現在位置の直下の地面高さを測る
+    let groundNowY = Math.floor(y);
+    for (let scanY = Math.floor(y); scanY >= Math.floor(y) - 28; scanY--) {
+      const b = getBlock(dim, { x: Math.floor(x), y: scanY, z: Math.floor(z) });
+      if (b && !isAirBlock(b)) { groundNowY = scanY + 1; break; }
+    }
+    const heightAboveGround = y - groundNowY;
+    // 相手が地上にいる（高さ差 < 2.2 かつ 上昇速度も小さい）場合は空中浮上ではない
+    if (heightAboveGround < 2.2 && vy < 0.28) return undefined;
+
+    for (let t = 1; t <= 45; t++) {
+      x += vx;
+      y += vy;
+      z += vz;
+      vy = Math.max(vy - JAVA_GRAVITY_PER_TICK, JAVA_TERMINAL_VELOCITY);
+      vx *= JAVA_FRICTION_PER_TICK;
+      vz *= JAVA_FRICTION_PER_TICK;
+      const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+      const below = getBlock(dim, { x: bx, y: by - 1, z: bz });
+      if (below && !isAirBlock(below) && vy <= 0) {
+        return {
+          x: bx + 0.5,
+          y: by,
+          z: bz + 0.5,
+          ticksToLand: t,
+          heightAboveGround,
+        };
+      }
+    }
+    return {
+      x: Math.floor(x) + 0.5,
+      y: groundNowY,
+      z: Math.floor(z) + 0.5,
+      ticksToLand: 20,
+      heightAboveGround,
+    };
+  } catch { return undefined; }
+}
+
+export function handleAirborneTargetLandingTrap(bot, target, config) {
+  if (config.airLandingCrystal === false || !config.crystalCombo) return false;
+  if (isSpawnProtected(config.uid)) return false;
+  const runtime = getRuntime(config.uid);
+  if (runtime.shieldGuardState?.active || runtime.elytraDashState?.active) return false;
+
+  const landing = predictAirborneTargetLandingSpot(target);
+  if (!landing) {
+    if (runtime.airInterceptGoal && globalTick > Number(runtime.airInterceptUntilTick ?? 0)) {
+      runtime.airInterceptGoal = undefined;
+    }
+    return false;
+  }
+
+  // 移動層・エンパ層が着地点へ即座に先回りできるよう目標座標を共有
+  runtime.airInterceptGoal = { x: landing.x, y: landing.y, z: landing.z };
+  runtime.airInterceptUntilTick = globalTick + Math.min(35, landing.ticksToLand + 10);
+
+  // 着地点が自分のクリスタル設置射程内に入ったら、着地点の足元(y-1)に黒曜石＋クリスタルを先回り設置してコンボ！
+  if (runtime.pendingCrystal || runtime.pendingAnchor) return false;
+  if (globalTick - Number(runtime.lastAirTrapTick ?? -9999) < 8) return false;
+
+  const landFloor = floorLocation(landing);
+  const candidateOffsets = [
+    { x: 0, z: 0 }, { x: 1, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 1 }, { x: 0, z: -1 },
+    { x: 1, z: 1 }, { x: 1, z: -1 }, { x: -1, z: 1 }, { x: -1, z: -1 },
+  ];
+  let bestTrap = undefined;
+  let bestScore = -Infinity;
+
+  for (const off of candidateOffsets) {
+    for (const dy of [-1, 0]) {
+      const base = { x: landFloor.x + off.x, y: landFloor.y + dy, z: landFloor.z + off.z };
+      const block = getBlock(bot.dimension, base);
+      let placementMode;
+      if (isCrystalBaseBlock(block)) placementMode = "existing-base";
+      else if (isAirBlock(block)) placementMode = "place-obsidian";
+      else continue;
+      if (placementMode === "place-obsidian" && !patchCanPlaceCombatBlock(bot, base)) continue;
+      if (placementMode !== "place-obsidian" && !patchCanInteractWithCombatBlock(bot, base)) continue;
+      if (!canPlaceEntityAt(bot.dimension, { x: base.x, y: base.y + 1, z: base.z })) continue;
+
+      const crystalLoc = getExplosionLocation(base, "crystal");
+      if (distance(bot.location, crystalLoc) > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE) continue;
+      // 自分の真下・密着しすぎは除外
+      if (distance(bot.location, crystalLoc) < 1.8) continue;
+
+      const distToLanding = Math.hypot(base.x + 0.5 - landing.x, base.z + 0.5 - landing.z);
+      const score = (dy === -1 ? 15 : 8) - distToLanding * 3.5 + (placementMode === "existing-base" ? 3 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        bestTrap = {
+          location: base,
+          placementMode,
+          targetDamage: 14,
+          selfDamage: 1.5,
+          score: 950 + score,
+          shieldBlock: findShieldBlock(bot, crystalLoc),
+          isDtap: true,
+          dtapBurst: 1,
+        };
+      }
+    }
+  }
+
+  if (bestTrap) {
+    runtime.lastAirTrapTick = globalTick;
+    runtime.lastCrystalTick = -9999;
+    debugLog(bot, config, "combat", `\u00a7d[AirTrap] 敵の上空浮上を検知(高度+${landing.heightAboveGround.toFixed(1)}) -> 着地点(${landFloor.x},${landFloor.y},${landFloor.z})へ先回りクリスタルコンボ！`, true);
+    appendPersistentDebugLog("combat", `${config.displayName}: airborne landing crystal trap @${bestTrap.location.x},${bestTrap.location.y},${bestTrap.location.z} (land in ~${landing.ticksToLand}t)`);
+    return handleCrystalCombo(bot, target, config, bestTrap);
+  }
+  return false;
+}
+
+rystalCombo(bot, target, config, bestTrap);
+  }
+  return false;
+}
+

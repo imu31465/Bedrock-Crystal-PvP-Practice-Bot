@@ -267,12 +267,14 @@ async function openBotSettingsModal(player, bot) {
     .toggle("[戦闘] エリトラ+メイス落下攻撃 (急降下コンボ)", { defaultValue: config.maceCombo ?? true })
     .toggle("[戦闘] エリトラを使う", { defaultValue: config.elytraDash ?? true })
     .slider("[戦闘] エリトラの発動距離 (ブロック)", 6, 32, { valueStep: 1, defaultValue: config.elytraDistance ?? 12 })
-    .toggle("[戦闘] サラウンド (相手を黒曜石で囲む)", { defaultValue: config.surroundTactic ?? true })
+    .toggle("[戦闘] サラウンド (相手を黒曜石で囲む)", { defaultValue: config.surroundTactic ?? false })
     .toggle("[戦闘] 自爆移動 (クリスタルサーフ/アンカージャンプ)", { defaultValue: config.crystalSurf ?? true })
     .toggle("[戦闘] ベッド爆弾 (ネザー/エンド限定)", { defaultValue: config.bedCombo ?? false })
     .toggle("[戦闘] ヒットクリスタル/d-tap連続起爆 (剣KB→足元黒曜石→連爆)", { defaultValue: config.dtapCombo ?? true })
     .toggle("[戦闘] アンカー段差掘り→下潜り足元クリスタル", { defaultValue: config.anchorStepDown ?? true })
     .toggle("[戦闘] 連続アンカー+直前手前ブロック設置連打", { defaultValue: config.anchorSpam ?? true })
+    .toggle("[戦闘] 敵エンパ追従・着地点先回り", { defaultValue: config.pearlFollow ?? true })
+    .toggle("[戦闘] 敵空中浮上時の着地点先回り足元クリスタル", { defaultValue: config.airLandingCrystal ?? true })
     .toggle("[人間味] 遅れ・ブレ・ミスを有効にする", { defaultValue: config.humanize })
     .slider("[人間味] 反応の遅れ (大きいほど鈍い)", 0, 12, { valueStep: 1, defaultValue: config.reactionDelay })
     .slider("[人間味] 視線のブレ (%)", 0, 30, { valueStep: 1, defaultValue: Math.round(Number(config.aimJitter ?? 0) * 100) })
@@ -297,11 +299,11 @@ async function openBotSettingsModal(player, bot) {
     runtime.isConfiguring = false;
   }
   if (response.canceled || !response.formValues) return;
-  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, dtapCombo, anchorStepDown, anchorSpam, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
+  const [enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, dtapCombo, anchorStepDown, anchorSpam, pearlFollow, airLandingCrystal, humanize, reactionDelay, aimJitterPercent, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval, debugEnabled, debugMovement, debugScan, debugCombat, debugHealth, debugTotem, debugLoadout, debugInventory] = response.formValues;
   const current = ensureBotInitialized(bot, player);
   if (!current) return;
   const updated = persistBotConfig(bot, {
-    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, dtapCombo, anchorStepDown, anchorSpam, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
+    ...current, ownerName: player.name, enabled, maintainDistance, targetRange, targetMobs, targetBots, jumpDash, strafeMove, enableMining, mineStuckTicksThreshold, pathfinding, blockPlacing, highGroundTactic, escapeTeleport, lookTurnSpeed, autoTotem, recoveryEnabled, totemRefillDelay, pearlMove, pearlRecover, pearlDistance, pearlCooldown, swordCombo, swordCooldown, crystalCombo, crystalCooldown, crystalDetonateDelay, ignoreSelfDamage, anchorCombo, anchorCooldown, anchorDetonateDelay, anchorBreakCache, eatWhenCornered, crossbowCombo, blastMitigation, shieldGuard, bowCombo, bowDistance, maceCombo, elytraDash, elytraDistance, surroundTactic, crystalSurf, bedCombo, dtapCombo, anchorStepDown, anchorSpam, pearlFollow, airLandingCrystal, humanize, reactionDelay, aimJitter: Number(aimJitterPercent) / 100, mistakeRate, suboptimalRate, unbreakableEquipment, tickInterval,
     debug: { enabled: debugEnabled, movement: debugMovement, scan: debugScan, combat: debugCombat, health: debugHealth, totem: debugTotem, loadout: debugLoadout, inventory: debugInventory },
   });
   bot.nameTag = updated.displayName || getDefaultBotDisplayName(updated.uid);

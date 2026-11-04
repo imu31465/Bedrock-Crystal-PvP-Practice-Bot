@@ -78,41 +78,75 @@ export function tacticPlaceBlockAt(bot, config, location) {
 
 // ターゲットが上にいて登れる足場が無い時、自分の足元にブロックを積んで高度を稼ぐ
 export function tacticTryPillarUp(bot, config, target) {
+  if (config.blockPlacing === false) return false;
   const runtime = getRuntime(config.uid);
   const heightGain = Number(runtime.pillarHeightGain ?? 0);
   if (heightGain >= TACTIC_PILLAR_MAX_HEIGHT) return false;
-  if (target.location.y - bot.location.y < 1.6) { runtime.pillarHeightGain = 0; return false; }
+  if (target && target.location.y - bot.location.y < 1.3) { runtime.pillarHeightGain = 0; return false; }
   const feet = floorLocation(bot.location);
-  const below = { x: feet.x, y: feet.y - 1, z: feet.z };
   // 頭上が塞がっていたら上には行けない
   if (!navIsPassableBlock(getBlock(bot.dimension, { x: feet.x, y: feet.y + 2, z: feet.z }))) return false;
+  const below = { x: feet.x, y: feet.y - 1, z: feet.z };
   const belowBlock = getBlock(bot.dimension, below);
-  if (belowBlock && !isAirBlock(belowBlock)) {
-    // 既に足場がある場合はジャンプしながら真下に置く必要があるので、
-    // 「ジャンプ中に足元へ設置」を movement 側の jump 要求と組み合わせる
-    if (!runtime.pillarJumpPending) { runtime.pillarJumpPending = true; return false; }
+
+  // [0.8.0] ブロック設置が全く動いていなかった根本原因の修正:
+  // 旧コードは接地中(below が既に固体ブロック)でも below(feet.y-1) に tacticPlaceBlockAt を呼んでいたため、
+  // tacticSetBlock 内の `if (!isAirBlock(block)) return false;` で 100% 失敗していた！
+  // 新実装:
+  //   1) 既に空中に浮いていて below(feet.y-1) が空気なら、そのまま真下にブロックを設置する。
+  //   2) 接地中(below が固体)なら、Botを上へジャンプ/リフトさせつつ現在の足元セル(feet.y)にブロックを積む。
+  if (!belowBlock || isAirBlock(belowBlock)) {
+    if (!tacticPlaceBlockAt(bot, config, below)) return false;
+  } else {
+    if (!isAirBlock(getBlock(bot.dimension, feet))) return false;
+    try { bot.jump?.(); } catch {}
+    try {
+      bot.teleport(
+        { x: bot.location.x, y: feet.y + 1.08, z: bot.location.z },
+        { dimension: bot.dimension, keepVelocity: false },
+      );
+    } catch {}
+    if (!tacticPlaceBlockAt(bot, config, feet)) return false;
   }
-  runtime.pillarJumpPending = false;
-  if (!tacticPlaceBlockAt(bot, config, below)) return false;
   runtime.pillarHeightGain = heightGain + 1;
   debugLog(bot, config, "movement", `§b[戦術] 柱で高度を稼いでいます (+${runtime.pillarHeightGain})`);
   return true;
 }
 
-// 空中の隙間をブロックで埋めて渡る
+// 空中の隙間や1段の段差をブロックで埋めて渡る
 export function tacticTryBridgeToward(bot, config, direction) {
+  if (config.blockPlacing === false) return false;
   const runtime = getRuntime(config.uid);
   const bridged = Number(runtime.bridgeBlockCount ?? 0);
   if (bridged >= TACTIC_BRIDGE_MAX_LENGTH) return false;
   const feet = floorLocation(bot.location);
+  const dx = Math.abs(direction.x) >= 0.25 ? Math.sign(direction.x) : Math.round(direction.x);
+  const dz = Math.abs(direction.z) >= 0.25 ? Math.sign(direction.z) : Math.round(direction.z);
+  if (dx === 0 && dz === 0) return false;
   const step = {
-    x: feet.x + Math.round(direction.x),
+    x: feet.x + dx,
     y: feet.y - 1,
-    z: feet.z + Math.round(direction.z),
+    z: feet.z + dz,
   };
-  if (step.x === feet.x && step.z === feet.z) return false;
   const stepBlock = getBlock(bot.dimension, step);
-  if (stepBlock && !isAirBlock(stepBlock)) { runtime.bridgeBlockCount = 0; return false; }
+  if (stepBlock && !isAirBlock(stepBlock)) {
+    // [0.8.0] 前方の床はあるが2ブロック以上の壁があって登れない場合、手前に足場ブロックを1段置いて階段を作る
+    const frontWall1 = getBlock(bot.dimension, { x: step.x, y: feet.y, z: step.z });
+    const frontWall2 = getBlock(bot.dimension, { x: step.x, y: feet.y + 1, z: step.z });
+    if (frontWall1 && !isAirBlock(frontWall1) && frontWall2 && !isAirBlock(frontWall2)) {
+      if (isAirBlock(getBlock(bot.dimension, feet)) &&
+          navIsPassableBlock(getBlock(bot.dimension, { x: feet.x, y: feet.y + 2, z: feet.z }))) {
+        try { bot.jump?.(); } catch {}
+        try { bot.teleport({ x: bot.location.x, y: feet.y + 1.05, z: bot.location.z }, { dimension: bot.dimension }); } catch {}
+        if (tacticPlaceBlockAt(bot, config, feet)) {
+          debugLog(bot, config, "movement", `§b[戦術] 壁越えの足場を設置`);
+          return true;
+        }
+      }
+    }
+    runtime.bridgeBlockCount = 0;
+    return false;
+  }
   // 渡った先の足元が空 かつ 体が通る空間があることを確認
   if (!navIsPassableBlock(getBlock(bot.dimension, { x: step.x, y: step.y + 1, z: step.z }))) return false;
   if (!tacticPlaceBlockAt(bot, config, step)) return false;

@@ -639,21 +639,33 @@ export function faceBotToward(bot, targetLocation, maxTurnDegrees) {
   try {
     const desired = getYawPitchToward(bot.location, targetLocation);
     if (typeof bot.setRotation !== "function") {
-      // 旧APIフォールバック: keepVelocity を付けて速度を保つ
       try { bot.teleport(bot.location, { dimension: bot.dimension, facingLocation: targetLocation, keepVelocity: true }); } catch {}
       return;
     }
-    if (!maxTurnDegrees || maxTurnDegrees >= 180) { bot.setRotation(desired); return; }
-    let currentYaw = desired.yaw, currentPitch = desired.pitch;
+    let nextPitch = desired.pitch;
+    let nextYaw = desired.yaw;
+    if (maxTurnDegrees && maxTurnDegrees < 180) {
+      let currentYaw = desired.yaw, currentPitch = desired.pitch;
+      try {
+        const rotation = bot.getRotation?.();
+        if (rotation) { currentYaw = Number(rotation.y ?? desired.yaw); currentPitch = Number(rotation.x ?? desired.pitch); }
+      } catch {}
+      const yawDelta = normalizeYawDelta(desired.yaw - currentYaw);
+      const pitchDelta = desired.pitch - currentPitch;
+      const yawStep = Math.max(-maxTurnDegrees, Math.min(maxTurnDegrees, yawDelta));
+      const pitchStep = Math.max(-maxTurnDegrees, Math.min(maxTurnDegrees, pitchDelta));
+      nextPitch = currentPitch + pitchStep;
+      nextYaw = currentYaw + yawStep;
+    }
+    // [0.8.0] Bedrock setRotation({ x: pitch, y: yaw }) は x/y で渡す必要がある
+    // (旧: maxTurnDegrees 未指定時に { yaw, pitch } をそのまま渡し、引数が無視されていた)。
+    // さらに SimulatedPlayer では head/body も lookAtTarget / lookAtBlock 等があれば併用して確実に相手の方向を向かせる。
+    try { bot.setRotation({ x: nextPitch, y: nextYaw }); } catch {}
     try {
-      const rotation = bot.getRotation?.();
-      if (rotation) { currentYaw = Number(rotation.y ?? desired.yaw); currentPitch = Number(rotation.x ?? desired.pitch); }
+      if (isSimBot(bot) && typeof bot.lookAtEntity === "function" && targetLocation?.id) {
+        bot.lookAtEntity(targetLocation);
+      }
     } catch {}
-    const yawDelta = normalizeYawDelta(desired.yaw - currentYaw);
-    const pitchDelta = desired.pitch - currentPitch;
-    const yawStep = Math.max(-maxTurnDegrees, Math.min(maxTurnDegrees, yawDelta));
-    const pitchStep = Math.max(-maxTurnDegrees, Math.min(maxTurnDegrees, pitchDelta));
-    bot.setRotation({ x: currentPitch + pitchStep, y: currentYaw + yawStep });
   } catch {}
 }
 export function setBotLookAt(bot, targetLocation, maxTurnDegrees) {

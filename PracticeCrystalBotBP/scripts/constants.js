@@ -36,7 +36,7 @@ export const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 export const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 export const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 export const BOT_READY_TAG = "pvpbot.ready";
-export const ADDON_VERSION = "0.7.1";
+export const ADDON_VERSION = "0.9.0";
 
 export const OBSIDIAN_ID = "minecraft:obsidian";
 export const END_CRYSTAL_ID = "minecraft:end_crystal";
@@ -402,9 +402,9 @@ export const PATCH_MANAGED_STACK_ITEM_IDS = [
   ENDER_PEARL_ID, TOTEM_ID, PATCH_ENCHANTED_GOLDEN_APPLE_ID,
   PATCH_GOLDEN_APPLE_ID,
   "minecraft:netherite_pickaxe",
-  // [P1][RCA-02] 武器・エリトラ類（syncBotLoadout の全消去で消えないよう管理対象にする）
+  // [P1][RCA-02] 武器・エリトラ・矢類（syncBotLoadout の全消去で消えないよう管理対象にする）
   MACE_ID,
-  "minecraft:bow", "minecraft:crossbow",
+  "minecraft:bow", "minecraft:crossbow", "minecraft:arrow",
   "minecraft:netherite_axe", "minecraft:shield",
   "minecraft:elytra", "minecraft:firework_rocket",
 ];
@@ -415,9 +415,9 @@ export const PATCH_DEFAULT_COMBAT_ITEM_COUNTS = {
   [PATCH_ENCHANTED_GOLDEN_APPLE_ID]: 8, [PATCH_GOLDEN_APPLE_ID]: 16,
   [TOTEM_ID]: 8,
   "minecraft:netherite_pickaxe": 1,
-  // [P1][RCA-02] 武器・エリトラ類の既定本数
+  // [P1][RCA-02] 武器・エリトラ・矢類の既定本数
   [MACE_ID]: 1,
-  "minecraft:bow": 1, "minecraft:crossbow": 1,
+  "minecraft:bow": 1, "minecraft:crossbow": 1, "minecraft:arrow": 64,
   "minecraft:netherite_axe": 1, "minecraft:shield": 1,
   "minecraft:elytra": 1, "minecraft:firework_rocket": 64,
 };
@@ -425,7 +425,7 @@ export const PATCH_DEFAULT_COMBAT_ITEM_COUNTS = {
 // [P1][RCA-02] 武器系は「戦闘キット」なのでオーナー/供給チェストの在庫で消えないよう
 // 最低本数を保証する。（syncBotLoadout の補充ループで Math.max に使う）
 export const PATCH_WEAPON_MIN_COUNTS = {
-  [MACE_ID]: 1, "minecraft:bow": 1, "minecraft:crossbow": 1,
+  [MACE_ID]: 1, "minecraft:bow": 1, "minecraft:crossbow": 1, "minecraft:arrow": 64,
   "minecraft:netherite_axe": 1, "minecraft:shield": 1,
   "minecraft:elytra": 1, "minecraft:firework_rocket": 64,
 };
@@ -442,6 +442,7 @@ export const PATCH_INFINITE_ITEM_COUNTS = {
   [TOTEM_ID]: 4,
   [PATCH_GOLDEN_APPLE_ID]: 64,
   "minecraft:netherite_pickaxe": 1,
+  "minecraft:arrow": 64,
 };
 
 // [P1][RCA-02] 補充時にエンチャントを付与する武器（1本ずつ作成）
@@ -501,21 +502,22 @@ export const PATCH_DIFFICULTY_PRESETS = {
     bedCombo: false, maceCombo: true, elytraDash: true,
   },
   hard: {
-    maintainDistance: 2, pearlDistance: 8, pearlCooldown: 12,
+    maintainDistance: 2, pearlDistance: 8, pearlCooldown: 0,
     swordCooldown: 9, crystalCooldown: 0, crystalDetonateDelay: 0,
     anchorCooldown: 0, anchorDetonateDelay: 0, totemRefillDelay: 0,
     reactionDelay: 0, aimJitter: 0, mistakeRate: 0, suboptimalRate: 0,
     jumpDash: true, pearlRecover: false, pearlMove: true, strafeMove: true,
     targetMobs: true, targetBots: true, autoTotem: true, recoveryEnabled: true,
     pathfinding: true, blockPlacing: true, highGroundTactic: true,
-    surroundTactic: true, crystalSurf: true, anchorBreakCache: true,
+    surroundTactic: false, crystalSurf: true, anchorBreakCache: true,
     enableMining: true, mineStuckTicksThreshold: 10, eatWhenCornered: true,
     escapeTeleport: true, lookTurnSpeed: 180, humanize: false,
     swordCombo: true, crystalCombo: true, anchorCombo: true,
     crossbowCombo: true, blastMitigation: true, shieldGuard: true,
-    bowCombo: true, bowDistance: 10, elytraDash: true, elytraDistance: 10,
+    bowCombo: true, bowDistance: 10, elytraDash: true, elytraDistance: 14,
     maceCombo: true, bedCombo: true,
     dtapCombo: true, anchorStepDown: true, anchorSpam: true,
+    pearlFollow: true, airLandingCrystal: true,
     unbreakableEquipment: true,
     ignoreSelfDamage: true, tickInterval: 1,
   },

@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.7.1: hardened against removed-SimulatedPlayer races — all fire-and-forget async combat chains now carry rejection guards, selectBestSword and the main tick validate the bot before use (fixes the two Unhandled rejections and the single tickBots location error seen when a bot was removed mid-action). v0.7.0 (combat rework complete): elytra post-flight freeze fix + guaranteed mace combo with rebound strikes; bow/crossbow self-hit elimination; blast-blocks placed right before detonation; anchor step-down crater + low-ground feet-crystal combo; continuous anchor + front-block spam; KB-sword d-tap multi-crystal detonation; bare-hand hit fix (removed synthetic Resistance II on SimBot); hard = all combat toggles ON; persistent combo/hurt logging (/pvpbot:debugdump).",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.9.0: 1) Strict Elytra-Mace discipline (never flies when enemy holds/uses crystals or anchors, never flies underground/indoors, requires >=14 horizontal blocks, aborts dive immediately if enemy starts crystal combat); 2) Held-item & action synchronization (prevents sword/obsidian overwrite during crystal/anchor/ranged/mace sequences, swaps active item into hotbar & syncs selectedSlotIndex); 3) Smart 1-block front blast mitigation (reuses existing cover blocks instead of re-placing every time, strictly 1-block feet-level cover with no 2-high walls so movement stays wide open).",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
-			7,
-			1
+			9,
+			0
 		],
 		"min_engine_version": [
 			1,
@@ -23,8 +23,8 @@
 			"uuid": "6a1b9e34-5f78-4c20-bd93-072a8e61c5d4",
 			"version": [
 				0,
-				7,
-				1
+				9,
+				0
 			]
 		}
 	],

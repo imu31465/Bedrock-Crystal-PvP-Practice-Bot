@@ -243,6 +243,9 @@ function patchGetEquipmentSignature(bot) {
 }
 
 function patchGetBotEquipmentSelector(bot) {
+  if (isSimBot(bot) && bot?.name) {
+    return `@a[name="${bot.name}",c=1]`;
+  }
   return `@e[type=${BOT_TYPE},x=${quoteCoord(bot.location.x)},y=${quoteCoord(bot.location.y)},z=${quoteCoord(bot.location.z)},r=${PATCH_VISUAL_EQUIPMENT_SELECTOR_RADIUS},c=1]`;
 }
 
@@ -254,16 +257,51 @@ export function patchSyncVisualEquipmentSlots(bot, force = false) {
   const signature = patchGetEquipmentSignature(bot);
   if (!force && runtime.lastVisualEquipmentSignature === signature &&
       globalTick - runtime.lastVisualEquipmentSyncTick < PATCH_VISUAL_EQUIPMENT_RESYNC_TICKS) return;
-  const selector = patchGetBotEquipmentSelector(bot);
-  for (const slot of [EquipmentSlot.Mainhand, EquipmentSlot.Offhand, EquipmentSlot.Head, EquipmentSlot.Chest, EquipmentSlot.Legs, EquipmentSlot.Feet]) {
-    const commandSlot = PATCH_VISUAL_SLOT_BY_EQUIPMENT.get(slot);
-    if (!commandSlot) continue;
-    const item = slot === EquipmentSlot.Mainhand ? visual.mainhand : slot === EquipmentSlot.Offhand ? visual.offhand : visual.armorBySlot[slot];
-    const itemId = item?.typeId ?? AIR_ID;
-    const command = item
-      ? `replaceitem entity ${selector} ${commandSlot} 0 ${itemId} 1 0`
-      : `replaceitem entity ${selector} ${commandSlot} 0 air`;
-    patchRunDimensionCommandNoThrow(bot.dimension, command);
+  // [0.9.0] SimulatedPlayer は selectedSlotIndex に対応するホットバースロットのアイテムを
+  // 実際に手に持つため、visual.mainhand とホットバー0番＆Mainhandスロットを完全一致させ、
+  // さらに replaceitem コマンドでもクライアント見た目を即時同期する（行動と持ち物の不一致を根絶）。
+  if (isSimBot(bot)) {
+    try {
+      const equippable = getEquippableComponent(bot);
+      const inventory = bot.getComponent(EntityComponentTypes.Inventory)?.container;
+      if (visual.mainhand) {
+        if (inventory) {
+          let slotIdx = -1;
+          for (let i = 0; i < Math.min(9, inventory.size); i++) {
+            if (inventory.getItem(i)?.typeId === visual.mainhand.typeId) { slotIdx = i; break; }
+          }
+          if (slotIdx === -1) {
+            const slot0 = inventory.getItem(0);
+            inventory.setItem(0, cloneItemStack(visual.mainhand));
+            if (slot0 && slot0.typeId !== visual.mainhand.typeId) {
+              patchPlaceItemInContainer(inventory, slot0);
+            }
+            slotIdx = 0;
+          }
+          if (typeof bot.selectedSlotIndex === "number") {
+            try { bot.selectedSlotIndex = slotIdx; } catch {}
+          }
+        }
+        if (equippable) {
+          try { equippable.setEquipment(EquipmentSlot.Mainhand, cloneItemStack(visual.mainhand)); } catch {}
+        }
+      }
+      if (equippable && visual.offhand) {
+        try { equippable.setEquipment(EquipmentSlot.Offhand, cloneItemStack(visual.offhand)); } catch {}
+      }
+    } catch {}
+  } else {
+    const selector = patchGetBotEquipmentSelector(bot);
+    for (const slot of [EquipmentSlot.Mainhand, EquipmentSlot.Offhand, EquipmentSlot.Head, EquipmentSlot.Chest, EquipmentSlot.Legs, EquipmentSlot.Feet]) {
+      const commandSlot = PATCH_VISUAL_SLOT_BY_EQUIPMENT.get(slot);
+      if (!commandSlot) continue;
+      const item = slot === EquipmentSlot.Mainhand ? visual.mainhand : slot === EquipmentSlot.Offhand ? visual.offhand : visual.armorBySlot[slot];
+      const itemId = item?.typeId ?? AIR_ID;
+      const command = item
+        ? `replaceitem entity ${selector} ${commandSlot} 0 ${itemId} 1 0`
+        : `replaceitem entity ${selector} ${commandSlot} 0 air`;
+      patchRunDimensionCommandNoThrow(bot.dimension, command);
+    }
   }
   runtime.lastVisualEquipmentSignature = signature;
   runtime.lastVisualEquipmentSyncTick = globalTick;
@@ -350,17 +388,36 @@ export function selectBestSword(bot) {
   const equippable = getEquippableComponent(bot);
   const inventory = bot.getComponent(EntityComponentTypes.Inventory)?.container;
   const runtime = getRuntime(getBotUid(bot));
-  let bestStats, bestItem;
+  // [0.9.0] クリスタル・アンカー・ベッド・遠距離引き絞り・エリトラダイブの実行中は
+  // 剣への自動持ち替えをブロックし、「やっていることと持っているものが違う」現象を防ぐ！
+  if (runtime?.pendingCrystal || runtime?.pendingAnchor || runtime?.pendingBed ||
+      runtime?.pendingRangedDraw || runtime?.elytraDashState?.active) {
+    return patchGetSwordCombatStatsFromItem(runtime?.selectedSword ?? new ItemStack("minecraft:netherite_sword", 1));
+  }
+  let bestStats, bestItem, bestSlot = -1;
   if (inventory) {
     for (let i = 0; i < inventory.size; i++) {
       const item = inventory.getItem(i);
       const stats = item && SWORD_STATS[item.typeId] ? patchGetSwordCombatStatsFromItem(item) : undefined;
       if (!stats || (bestStats && stats.score < bestStats.score)) continue;
-      bestStats = stats; bestItem = item;
+      bestStats = stats; bestItem = item; bestSlot = i;
     }
   }
   if (bestItem) {
     runtime.visualMainhand = cloneItemStack(bestItem);
+    if (isSimBot(bot) && inventory) {
+      try {
+        if (bestSlot >= 9) {
+          const slot0 = inventory.getItem(0);
+          inventory.setItem(0, cloneItemStack(bestItem));
+          inventory.setItem(bestSlot, slot0);
+          bestSlot = 0;
+        }
+        if (typeof bot.selectedSlotIndex === "number" && bestSlot >= 0 && bestSlot < 9) {
+          bot.selectedSlotIndex = bestSlot;
+        }
+      } catch {}
+    }
     if (equippable) {
       try { equippable.setEquipment(EquipmentSlot.Mainhand, cloneItemStack(bestItem)); } catch {}
       patchSyncVisualEquipmentSlots(bot, true);
@@ -413,6 +470,16 @@ export function equipMainhandItem(bot, itemId, config, allowSync = true) {
     syncBotLoadout(bot, config, true);
     item = patchFindInventoryItem(inventory, itemId);
   }
+  // [0.8.0] インベントリに無い場合でも戦闘キット武器・必須アイテムなら即座に生成して持たせる
+  if (!item && (PATCH_WEAPON_MIN_COUNTS[itemId] !== undefined || config?.inventoryMode === "infinite")) {
+    try {
+      const enchantSet = BOT_WEAPON_ENCHANTMENT_SETS.get(itemId);
+      item = enchantSet
+        ? applyEnchantments(new ItemStack(itemId, 1), enchantSet, config?.unbreakableEquipment ?? true)
+        : new ItemStack(itemId, 1);
+      patchPlaceItemInContainer(inventory, cloneItemStack(item));
+    } catch {}
+  }
   if (!item) {
     if (itemId === "minecraft:end_crystal") {
       let counts = 0;
@@ -423,6 +490,39 @@ export function equipMainhandItem(bot, itemId, config, allowSync = true) {
   }
   const runtime = getRuntime(config?.uid ?? getBotUid(bot));
   runtime.visualMainhand = cloneItemStack(item);
+  // [0.9.0] SimulatedPlayer で確実に外見上も手に持たせるため、そのアイテムがインベントリの
+  // 9番以降(バックパック)にある場合はホットバー0番へスワップし、selectedSlotIndex をそのホットバースロットに合わせる！
+  if (isSimBot(bot)) {
+    try {
+      let foundHotbarSlot = -1;
+      for (let i = 0; i < Math.min(9, inventory.size); i++) {
+        if (inventory.getItem(i)?.typeId === itemId) { foundHotbarSlot = i; break; }
+      }
+      if (foundHotbarSlot === -1) {
+        let invSlot = -1;
+        for (let i = 9; i < inventory.size; i++) {
+          if (inventory.getItem(i)?.typeId === itemId) { invSlot = i; break; }
+        }
+        if (invSlot >= 9) {
+          const slot0 = inventory.getItem(0);
+          const targetStack = inventory.getItem(invSlot);
+          inventory.setItem(0, targetStack);
+          inventory.setItem(invSlot, slot0);
+          foundHotbarSlot = 0;
+        } else {
+          const slot0 = inventory.getItem(0);
+          inventory.setItem(0, cloneItemStack(item));
+          if (slot0 && slot0.typeId !== itemId) {
+            patchPlaceItemInContainer(inventory, slot0);
+          }
+          foundHotbarSlot = 0;
+        }
+      }
+      if (typeof bot.selectedSlotIndex === "number") {
+        bot.selectedSlotIndex = foundHotbarSlot >= 0 ? foundHotbarSlot : 0;
+      }
+    } catch {}
+  }
   if (!equippable) { patchSyncVisualEquipmentSlots(bot, true); return true; }
   try { equippable.setEquipment(EquipmentSlot.Mainhand, cloneItemStack(item)); } catch {}
   patchSyncVisualEquipmentSlots(bot, true);
@@ -899,6 +999,7 @@ export function seedBotLoadout(bot) {
     new ItemStack("minecraft:netherite_axe", 1),
     applyEnchantments(new ItemStack("minecraft:netherite_pickaxe", 1), BOT_PICKAXE_ENCHANTMENTS, true),
     applyEnchantments(new ItemStack("minecraft:bow", 1), BOT_BOW_ENCHANTMENTS, true),
+    new ItemStack("minecraft:arrow", 64),
     applyEnchantments(new ItemStack("minecraft:elytra", 1), BOT_ELYTRA_ENCHANTMENTS, true),
     // [v0.5.0] メイス (エリトラ落下攻撃コンボ用。Wind Burst III — ヒット時に突風で跳ね上がり連撃可。
     //   density/breach/wind_burst は相互排他のため1本に1種。火力特化は density V、
