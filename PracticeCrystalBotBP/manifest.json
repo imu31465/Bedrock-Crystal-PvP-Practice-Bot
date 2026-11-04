@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.5.6: hardened against current-engine quirk where a SimulatedPlayer surfaces as undefined in world.getAllPlayers() and playerSpawn events (all player lookups/loops now skip falsy entries; bot-online no longer breaks player iteration). v0.5.5: crystal-surf spawns ender_crystal (entity id, not the item id) and async failures can no longer freeze movement. v0.5.4: hard preset keeps 0-value cooldowns; hole-escape ladder works; blast-mitigation block spam tamed. v0.5.3: un-namespaced \"bot\" registration removed (/bot via pvpbot:bot alias). v0.5.2: /bot caller resolved from CustomCommandOrigin.sourceEntity.",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.6.0 (combat rework part 1): bow/crossbow arrows spawn 1.5 blocks ahead of the muzzle (no more zero-range self-hits); elytra dive guarantees at least one mace attack per launch, up to 3 consecutive strikes, mace re-equipped before every strike, and a watchdog force-ends stalled dives (bot can no longer freeze after flying); crystal detonation above the target's head is banned except when surrounded, and feet-level explosions are heavily prioritized (existing-base auto-preference removed). v0.5.6: undefined-entry hardening for SimulatedPlayer in player iteration. v0.5.5: ender_crystal entity id fix for crystal-surf. v0.5.4: hard 0-value cooldowns preserved; hole-escape ladder; blast-mitigation block spam tamed. v0.5.3: namespaced /bot alias. v0.5.2: sourceEntity caller resolution.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
-			5,
-			6
+			6,
+			0
 		],
 		"min_engine_version": [
 			1,
@@ -23,8 +23,8 @@
 			"uuid": "6a1b9e34-5f78-4c20-bd93-072a8e61c5d4",
 			"version": [
 				0,
-				5,
-				6
+				6,
+				0
 			]
 		}
 	],

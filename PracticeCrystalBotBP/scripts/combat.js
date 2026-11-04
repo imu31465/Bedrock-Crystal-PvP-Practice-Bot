@@ -241,14 +241,19 @@ export function scanCrystalCandidates(bot, target, config) {
         selfDamage = shieldedSelfDamage;
       }
       
+      // [0.6.0] 足元起爆メタ最優先: クリスタル中心 = base+1 のため
+      //   yOffset -1 = 相手の足元と同高（最良）/ 0 = 腰（準最適）/ +1 = 頭の上（原則禁止）
+      const surroundTop = surroundActiveOn(bot, target, config);
+      if (yOffset >= 1 && !surroundTop) continue; // 頭上起爆は囲い中以外は選ばない
       let score = targetDamage - selfDamage * 0.5;
-      if (yOffset <= 0) score += 4; // 相手の足元以下で起爆 = 下半身ヒット (メタ通り)
+      if (yOffset <= -1) score += 10;      // 足元一致（メタの最適解）
+      else if (yOffset === 0) score += 6;  // 腰（準最適）
       // [v0.5.0] サラウンド連携: 囲い済み相手は頭上起爆のみ有効（側面は囲いが相手の盾になる）
-      if (surroundActiveOn(bot, target, config)) score += surroundPlacementScoreAdjust(yOffset);
+      if (surroundTop) score += surroundPlacementScoreAdjust(yOffset);
       // [B-7] 反転: Botが爆発より「下」にいることを評価（旧: 上にいる +2 は実戦メタと逆）
       // 低位にいる側は体の上面（爆風が当たらない側）を守り、相手の下面に被弾を与えられる。
       if (botFloor.y < crystalLocation.y) score += 2;
-      if (placementMode === "existing-base") score += 8; // Reuse existing bases instead of spending obsidian.
+      if (placementMode === "existing-base") score += 3; // 消費節約（高さ評価を最優先に変更）
       // [B-2] 予測位置への先回りボーナス
       if (Math.hypot(base.x + 0.5 - predicted.x, base.z + 0.5 - predicted.z) <= 1.5 && Math.abs(base.y - Math.floor(predicted.y)) <= 1) score += PREDICTION_BONUS;
       // [B-4] i-frame明けジャスト起爆ボーナス (d-tap)
@@ -257,10 +262,9 @@ export function scanCrystalCandidates(bot, target, config) {
       candidates.push({ location: base, placementMode, targetDamage, selfDamage, score, shieldBlock });
     }
   }
-  candidates.sort((a, b) => {
-    const basePreference = Number(b.placementMode === "existing-base") - Number(a.placementMode === "existing-base");
-    return basePreference || b.score - a.score;
-  });
+  // [0.6.0] 既存基盤の絶対優先を廃止（頭上の既存クリスタル基盤が優先されて
+  // 「頭より上で起爆」していた主因）。高さを含むスコアのみで選ぶ。
+  candidates.sort((a, b) => b.score - a.score);
   try {
     if (Number(globalTick % 30) === 0) {
       const best = candidates[0];
@@ -989,7 +993,13 @@ export function handleSimCrossbowAttack(bot, target, config) {
         // [F-5] 実体の矢を発射する。ダメージ・命中判定はすべてエンジン側。
         // （旧実装の addEffect による合成スロウフォール付与はバニラに存在しないため廃止。
         //   targetHasSlowFalling による「追撃優先」は自然付与された効果の検知として残る）
-        firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        // [0.6.0] 自ヒット修正: 前方へオフセットした位置から発射（bow 側と同様）
+        const muzzle = addVector(eye, { x: dir.x * 1.5, y: dir.y * 1.5, z: dir.z * 1.5 });
+        try {
+          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", muzzle);
+        } catch {
+          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        }
         let shot = false;
         try { firedArrow.shoot?.({ direction: dir, speed: 3 }); shot = true; } catch {}
         if (!shot) {
@@ -1202,7 +1212,14 @@ export function handleBowAttack(bot, target, config) {
         const delta = vectorTo(eye, aimPoint);
         const len = Math.hypot(delta.x, delta.y, delta.z) || 1;
         const dir = { x: delta.x / len, y: delta.y / len, z: delta.z / len };
-        firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        // [0.6.0] 自ヒット修正: 眼の位置（自分のヒットボックス内）から出すと即座に
+        // 自分へ衝突し「飛距離ゼロ・全弾自傷」になる。進行方向へ1.5ブロックずらして発射。
+        const muzzle = addVector(eye, { x: dir.x * 1.5, y: dir.y * 1.5, z: dir.z * 1.5 });
+        try {
+          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", muzzle);
+        } catch {
+          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        }
         let shot = false;
         try { firedArrow.shoot?.({ direction: dir, speed: 3.2 }); shot = true; } catch {}
         if (!shot) { try { firedArrow.applyImpulse({ x: dir.x * 3.2, y: dir.y * 3.2, z: dir.z * 3.2 }); shot = true; } catch {} }
@@ -1319,9 +1336,9 @@ export function handleElytraMaceDive(bot, target, config) {
   if (patchGetCurrentHealthValue(bot) < 10) return false;
   runtime.lastElytraDashTick = globalTick;
   const state = {
-    active: true, phase: "rise", ticks: 0, attacks: 0,
+    active: true, phase: "rise", ticks: 0, attacks: 0, attempts: 0,
     until: globalTick + ELYTRA_DIVE_TOTAL_MAX_TICKS,
-    chestItem: chestItem ?? undefined, startTick: globalTick,
+    chestItem: chestItem ?? undefined, startTick: globalTick, lastStepTick: globalTick,
   };
   runtime.elytraDashState = state;
   try { equippable.setEquipment(EquipmentSlot.Chest, new ItemStack("minecraft:elytra", 1)); } catch {}
@@ -1336,7 +1353,8 @@ export function handleElytraMaceDive(bot, target, config) {
     try {
       if (!bot?.isValid || !state.active) { endElytraMaceDive(bot, config, state); return; }
       state.ticks++;
-      if (globalTick >= state.until) { endElytraMaceDive(bot, config, state); return; }
+      state.lastStepTick = globalTick;
+      if (globalTick >= state.until) { endElytraMaceDive(bot, config, state, "timeout"); return; }
       const targetLoc = target?.isValid ? target.location : undefined;
       if (!targetLoc) { endElytraMaceDive(bot, config, state); return; }
       const heightDiff = bot.location.y - targetLoc.y;
@@ -1361,26 +1379,43 @@ export function handleElytraMaceDive(bot, target, config) {
         // 真下への急降下 (メイス装備のまま)。距離3以内でエンジン近接攻撃。
         faceBotToward(bot, addVector(targetLoc, { x: 0, y: 0.4, z: 0 }));
         try { bot.applyImpulse({ x: 0, y: -0.42, z: 0 }); } catch {}
-        if (curD <= MACE_DIVE_ATTACK_RANGE && state.attacks < MACE_DIVE_ATTACKS_MAX) {
+        // [0.6.0] 「エリトラで突っ込んだら必ずメイス」保証:
+        //   通常窓(3.5以内)に加え、下降中で相手の上〜同高（heightDiff<=0.5）かつ5以内なら
+        //   「確実に一度は攻撃を試みる」保証窓として扱う（未攻撃のまま終了させない）。
+        const inPrimaryWindow = curD <= MACE_DIVE_ATTACK_RANGE;
+        const inGuaranteedWindow = state.attempts === 0 && curD <= 5.0 && heightDiff <= 0.5;
+        if ((inPrimaryWindow || inGuaranteedWindow) && state.attempts < MACE_DIVE_ATTACKS_MAX) {
+          // 攻撃直前に必ずメイスへ持ち替える（絶対メイス契約）
+          try { equipMainhandItem(bot, MACE_ID, config); } catch {}
+          let ok = false;
           try {
-            // [P1][A-1] simulateAttack は存在しない（typeofガードなしで throw を握り潰していた）。
-            // 実在する attackEntity に置換。急降下は curD<=3 のときのみここへ届く。
-            let ok = false;
             if (typeof bot.attackEntity === "function") { ok = Boolean(bot.attackEntity(target)); }
             else if (typeof bot.attack === "function") { ok = Boolean(bot.attack()); }
-            if (ok) {
-              state.attacks++;
-              debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 hit #${state.attacks} (engine melee)`, true);
-            }
-          } catch {}
-          if (state.attacks >= MACE_DIVE_ATTACKS_MAX) { endElytraMaceDive(bot, config, state); return; }
+          } catch { ok = false; }
+          state.attempts++;
+          if (ok) {
+            state.attacks++;
+            debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 hit #${state.attacks}/${MACE_DIVE_ATTACKS_MAX} (engine melee)`, true);
+          } else {
+            debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 attempt #${state.attempts} 不成立`, false);
+          }
+          if (state.attempts >= MACE_DIVE_ATTACKS_MAX) { endElytraMaceDive(bot, config, state, "max-attack"); return; }
           // Wind Burstで跳ね返る可能性 → 12tickだけ再降下を許可
           state.phase = "rebound";
           state.reboundUntil = globalTick + 12;
           return;
         }
-        // 地面スレスレまで行ったら攻撃を諦めて離脱
-        if (heightDiff <= -1) { endElytraMaceDive(bot, config, state); return; }
+        // 地面スレスレまで来たとき: 一度も攻撃できていなければ跳ねて1パスだけやり直す
+        if (heightDiff <= -1) {
+          if (state.attempts === 0 && globalTick + 14 < state.until) {
+            state.phase = "rebound";
+            state.reboundUntil = globalTick + 4;
+            try { bot.applyImpulse({ x: 0, y: 0.5, z: 0 }); } catch {}
+            return;
+          }
+          endElytraMaceDive(bot, config, state, "landed-no-attack");
+          return;
+        }
       } else if (state.phase === "rebound") {
         if (globalTick >= state.reboundUntil) { state.phase = "dive"; return; }
         try { bot.applyImpulse({ x: 0, y: -0.3, z: 0 }); } catch {}
@@ -1392,7 +1427,7 @@ export function handleElytraMaceDive(bot, target, config) {
   return true;
 }
 
-function endElytraMaceDive(bot, config, state) {
+export function endElytraMaceDive(bot, config, state, reason = "end") {
   try {
     state.active = false;
     try {
@@ -1400,12 +1435,24 @@ function endElytraMaceDive(bot, config, state) {
       rt.elytraDashState = undefined;
       // [0.5.4] 着地後に経路を再構築（穴に嵌まったまま古い経路を追い続けない）
       rt.navPath = undefined;
+      // [0.6.0] ダイブで中断した移動を確実に再開させる（詰まり判定をリセット）
+      rt.stuckTicks = 0;
+      rt.stuckWindow = undefined;
     } catch {}
     const equippable = getEquippableComponent(bot);
     if (equippable) {
       try { equippable.setEquipment(EquipmentSlot.Chest, state.chestItem ?? new ItemStack("minecraft:netherite_chestplate", 1)); } catch {}
     }
     try { selectBestSword(bot); } catch {}
-    debugLog(bot, config, "combat", "\u00a75[ElytraMace] 着地 -> 復帰 (低位戦へ)", true);
+    debugLog(bot, config, "combat", `\u00a75[ElytraMace] 終了(${reason}) attempts=${state.attempts ?? 0} hits=${state.attacks ?? 0} -> 復帰 (低位戦へ)`, true);
+  } catch {}
+}
+
+// [0.6.0] ウォッチドッグ用: 進行が止まった elytraDashState を外部（main tick）から強制終了する。
+export function abortElytraMaceDive(bot, config) {
+  try {
+    const rt = getRuntime(config.uid);
+    const state = rt.elytraDashState;
+    if (state) endElytraMaceDive(bot, config, state, "watchdog");
   } catch {}
 }

@@ -41,6 +41,7 @@ import {
   handleSwordCombo, handleCrystalCombo, handleAnchorCombo,
   chooseBestExplosiveAction, handleSimThreatDefense, handleSimCrossbowAttack, handleSimShieldGuard, handleAxeShieldBreak,
   handleBowAttack, handleElytraMaceDive, handleBedCombo, noteTargetHurt,
+  abortElytraMaceDive,
 } from "./combat.js";
 import { trySurroundTarget } from "./tactics.js";
 import { registerChainSpeedTracking, sendChainStats } from "./chain_speed.js";
@@ -168,6 +169,12 @@ function tickBots() {
     }
 
     // Movement (エリトラ滑空中は移動エンジンを止める)
+    // [0.6.0] ダイブ・ウォッチドッグ: step() チェーンが途切れても state が残り続けて
+    // 「動かない」状態になるのを防ぐ（5tick 進捗が無ければ強制終了して移動を再開）。
+    const dashState = getRuntime(config.uid).elytraDashState;
+    if (dashState?.active && globalTick - Number(dashState.lastStepTick ?? -9999) > 5) {
+      try { abortElytraMaceDive(bot, config); } catch {}
+    }
     const diving = Boolean(getRuntime(config.uid).elytraDashState?.active);
     if (!diving) handleMovement(bot, target, config);
 
@@ -275,7 +282,9 @@ function onEntityHurt(event) {
   const maxHealth = patchGetMaxHealthValue(entity);
   const cause = event.damageSource?.cause ?? "unknown";
   if (config.debug?.health) {
-    debugLog(entity, config, "health", `被ダメージ=${damage.toFixed(1)} 残HP=${remainingHealth.toFixed(1)}/${maxHealth.toFixed(1)} cause=${cause}`, true);
+    let srcId = "?";
+    try { srcId = `${event.damageSource?.damagingEntity?.typeId ?? "?"}`; } catch {}
+    debugLog(entity, config, "health", `被ダメージ=${damage.toFixed(1)} 残HP=${remainingHealth.toFixed(1)}/${maxHealth.toFixed(1)} cause=${cause} src=${srcId}`, true);
   }
   if (config.autoTotem &&
       globalTick > (runtime.totemShieldUntilTick ?? -9999) &&

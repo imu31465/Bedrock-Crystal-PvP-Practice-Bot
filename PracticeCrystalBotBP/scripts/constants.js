@@ -36,7 +36,7 @@ export const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 export const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 export const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 export const BOT_READY_TAG = "pvpbot.ready";
-export const ADDON_VERSION = "0.5.6";
+export const ADDON_VERSION = "0.6.0";
 
 export const OBSIDIAN_ID = "minecraft:obsidian";
 export const END_CRYSTAL_ID = "minecraft:end_crystal";
@@ -300,9 +300,9 @@ export const BOT_MACE_ENCHANTMENTS = [
 // [v0.5.0] エリトラ+メイス急降下（上空滞留を廃して被弾を最小化する再設計）
 export const ELYTRA_DIVE_RISE_MAX_TICKS = 10;  // 上昇フェーズの上限（被弾暴露の最小化）
 export const ELYTRA_DIVE_AIM_HEIGHT = 7;       // 相手+7ブロックを目標高度
-export const ELYTRA_DIVE_TOTAL_MAX_TICKS = 26; // 滞空総上限（旧30）
+export const ELYTRA_DIVE_TOTAL_MAX_TICKS = 48; // [0.6.0] 最大3ストライク分の滞空を許容（旧26）
 export const MACE_DIVE_ATTACK_RANGE = 3.0;     // attackEntity で落下攻撃を叩く距離
-export const MACE_DIVE_ATTACKS_MAX = 2;        // Wind Burst 跳ね返り後の再攻撃回数
+export const MACE_DIVE_ATTACKS_MAX = 3;        // [0.6.0] 連続ストライク上限（必ずメイスを当て切る）
 
 export const BOT_ARMOR_ENCHANTMENTS = {
   [EquipmentSlot.Head]: [
