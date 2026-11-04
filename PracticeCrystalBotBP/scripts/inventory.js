@@ -953,6 +953,12 @@ export function ensureBotEquipmentIntegrity(bot, config) {
 }
 
 export function applyArmorDerivedEffects(bot) {
+  // [0.7.0] SimulatedPlayer(SimBot)は実プレイヤーのため、装備したネザライト防具の防御点と
+  // 防護エンチャント(EPF)がエンジン側でそのまま計算される。
+  // ここにさらに Resistance II (-40%軽減) を毎6tick付与していたせいで、素手や非エンチャ武器の
+  // 殴りダメージがエンジン側で0に丸められ「火属性の炎上だけ入って通常の殴りが通らない」
+  // 症状を引き起こしていた。そのため SimBot には疑似 Resistance を付与しない。
+  if (isSimBot(bot)) return;
   const armorItems = patchGetEquippedArmorItems(bot);
   if (!armorItems.length) return;
   const armorPoints = armorItems.reduce((sum, item) => sum + patchGetArmorDefenseValue(item), 0);

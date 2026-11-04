@@ -12,8 +12,10 @@ import {
   SURROUND_SEAL_EXPIRE_TICKS, SURROUND_SIDE_PENALTY, SURROUND_TOP_BONUS,
   DEFENSE_SCAN_TICKS, DEFENSE_BLOCK_CD_TICKS, DEFENSE_THREAT_RADIUS, DEFENSE_PREEMPT_CD_TICKS,
   MACE_ID, ELYTRA_DIVE_RISE_MAX_TICKS, ELYTRA_DIVE_AIM_HEIGHT, ELYTRA_DIVE_TOTAL_MAX_TICKS,
-  MACE_DIVE_ATTACK_RANGE, MACE_DIVE_ATTACKS_MAX,
+  MACE_DIVE_ATTACK_RANGE, MACE_DIVE_ATTACKS_MAX, ELYTRA_COMBO_REBOUND_TICKS,
+  DTAP_COMBO_MAX_BURSTS, DTAP_FOLLOWUP_DELAY_TICKS, ANCHOR_SPAM_MAX_CHAIN,
 } from "./constants.js";
+import { isSimBot } from "./sim_port.js";
 import { globalTick, globalSettings } from "./state.js";
 import {
   distance, distanceSquared, vectorTo, addVector, normalize2D,
@@ -162,17 +164,25 @@ function isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) {
 
 function findShieldBlock(bot, explosionLocation) {
   const dist = distance(bot.location, explosionLocation);
-  if (dist < 2.5) return undefined;
+  if (dist < 1.8) return undefined;
   const dir = normalize2D(vectorTo(bot.location, explosionLocation));
-  const shieldLoc = {
-    x: Math.floor(bot.location.x + dir.x * 1.5),
-    y: Math.floor(bot.location.y + 1), // Eye level
-    z: Math.floor(bot.location.z + dir.z * 1.5)
-  };
-  if (shieldLoc.x === Math.floor(explosionLocation.x) && shieldLoc.y === Math.floor(explosionLocation.y) && shieldLoc.z === Math.floor(explosionLocation.z)) return undefined;
-  try {
-    if (isAirBlock(getBlock(bot.dimension, shieldLoc))) return shieldLoc;
-  } catch {}
+  if (!dir || (Math.abs(dir.x) < 0.01 && Math.abs(dir.z) < 0.01)) return undefined;
+  const botFloor = floorLocation(bot.location);
+  const expFloor = floorLocation(explosionLocation);
+  // [0.7.0] 手前遮蔽ブロックは「自分の足元〜腰の高さ(dy=0優先, 次点dy=1)」かつ
+  // 接地または隣接支持面がある座標を選ぶ（旧: dy=1固定で空中に浮き設置失敗していた）。
+  const candidates = [
+    { x: Math.floor(bot.location.x + dir.x * 1.15), y: botFloor.y, z: Math.floor(bot.location.z + dir.z * 1.15) },
+    { x: Math.floor(bot.location.x + dir.x * 1.55), y: botFloor.y, z: Math.floor(bot.location.z + dir.z * 1.55) },
+    { x: Math.floor(bot.location.x + dir.x * 1.35), y: botFloor.y + 1, z: Math.floor(bot.location.z + dir.z * 1.35) },
+  ];
+  for (const loc of candidates) {
+    if (loc.x === botFloor.x && loc.z === botFloor.z && (loc.y === botFloor.y || loc.y === botFloor.y + 1)) continue;
+    if (loc.x === expFloor.x && loc.z === expFloor.z && (loc.y === expFloor.y || loc.y === expFloor.y - 1)) continue;
+    try {
+      if (isAirBlock(getBlock(bot.dimension, loc))) return loc;
+    } catch {}
+  }
   return undefined;
 }
 
@@ -232,14 +242,17 @@ export function scanCrystalCandidates(bot, target, config) {
       if (targetDamage < 1) continue;
       
       let shieldBlock = undefined;
-      if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) {
-        shieldBlock = config.blastMitigation ? findShieldBlock(bot, crystalLocation) : undefined;
-        if (shieldBlock && !patchCanPlaceCombatBlock(bot, shieldBlock)) shieldBlock = undefined;
-        if (!shieldBlock) continue;
-        const shieldedSelfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
-        if (!isExplosionCandidateSafe(bot, targetDamage, shieldedSelfDamage, config)) continue;
-        selfDamage = shieldedSelfDamage;
+      if (config.blastMitigation) {
+        const candidateShield = findShieldBlock(bot, crystalLocation);
+        if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
+          // 自傷がある程度出る（>=1.5）か安全閾値を超える場合は、直前手前ブロック設置を予約
+          if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 1.5) {
+            shieldBlock = candidateShield;
+            selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
+          }
+        }
       }
+      if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) continue;
       
       // [0.6.0] 足元起爆メタ最優先: クリスタル中心 = base+1 のため
       //   yOffset -1 = 相手の足元と同高（最良）/ 0 = 腰（準最適）/ +1 = 頭の上（原則禁止）
@@ -276,9 +289,12 @@ export function scanCrystalCandidates(bot, target, config) {
 
 export function scanAnchorCandidates(bot, target, config) {
   const candidates = [];
+  const botFloor = floorLocation(bot.location);
   const targetFloor = floorLocation(target.location);
+  const sameLevelOrAbove = botFloor.y >= targetFloor.y;
   for (const offset of CRYSTAL_OFFSETS) {
-    for (const yOffset of [0, -1, 1, -2]) {
+    // [0.7.0] アンカーも頭上(yOffset>=1)起爆は囲い中以外は禁止し、足元(0 / -1)を最優先にする
+    for (const yOffset of [-1, 0, 1, -2]) {
       const base = { x: targetFloor.x + offset.x, y: targetFloor.y + yOffset, z: targetFloor.z + offset.z };
       const block = getBlock(bot.dimension, base);
       let placementMode, existingCharge = 0;
@@ -302,36 +318,47 @@ export function scanAnchorCandidates(bot, target, config) {
       if (targetDamage < 1) continue;
       
       let shieldBlock = undefined;
-      if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) {
-        shieldBlock = config.blastMitigation ? findShieldBlock(bot, explosionLocation) : undefined;
-        if (shieldBlock && !patchCanPlaceCombatBlock(bot, shieldBlock)) shieldBlock = undefined;
-        if (!shieldBlock) continue;
-        const shieldedSelfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "blockExplosion");
-        if (!isExplosionCandidateSafe(bot, targetDamage, shieldedSelfDamage, config)) continue;
-        selfDamage = shieldedSelfDamage;
+      if (config.blastMitigation) {
+        const candidateShield = findShieldBlock(bot, explosionLocation);
+        if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
+          // 連続アンカー+手前ブロック(anchorSpam)有効時、または自傷軽減が必要な時は直前遮蔽ブロックを予約
+          if (config.anchorSpam !== false || !isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 1.0) {
+            shieldBlock = candidateShield;
+            selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "blockExplosion");
+          }
+        }
       }
+      if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) continue;
 
+      const surroundTop = surroundActiveOn(bot, target, config);
+      if (yOffset >= 1 && !surroundTop) continue; // 頭上アンカー起爆は囲い中以外は選ばない
       let score = targetDamage - selfDamage * 0.5;
+      if (yOffset <= 0) score += 8; // 足元・地面高さのアンカー起爆を優先
       // [v0.5.0] サラウンド連携（アンカーも同様）
-      if (surroundActiveOn(bot, target, config)) score += surroundPlacementScoreAdjust(yOffset);
+      if (surroundTop) score += surroundPlacementScoreAdjust(yOffset);
       // [B-4] i-frame明けジャスト起爆ボーナス (d-tap)
       score += iframeTimingBonus(target, 2 + Math.max(1, Math.floor(Number(config.anchorDetonateDelay ?? 3))));
-      if (yOffset === -1 && Math.abs(offset.x) <= 1 && Math.abs(offset.z) <= 1) {
+      // [0.7.0] アンカー段差掘り戦術 (anchorStepDown):
+      // 相手の足元周辺(yOffset <= 0)を爆破して段差を作り、自分が下に入って
+      // 相手の地面の高さに黒曜石+クリスタルを差し込む競技メタを強く優先する。
+      let isStepDownCandidate = false;
+      if (yOffset <= 0 && Math.abs(offset.x) <= 2 && Math.abs(offset.z) <= 2) {
         try {
           if (isSolidBlock(getBlock(target.dimension, { x: targetFloor.x, y: targetFloor.y - 1, z: targetFloor.z }))) {
-            score += 8; // Anchor Down Tactics: break footing
+            score += (config.anchorStepDown !== false && sameLevelOrAbove) ? 16 : 8;
+            isStepDownCandidate = true;
           }
         } catch {}
       }
 
-      candidates.push({ location: base, placementMode, existingCharge, targetDamage, selfDamage, score, shieldBlock });
+      candidates.push({ location: base, placementMode, existingCharge, targetDamage, selfDamage, score, shieldBlock, isStepDownCandidate });
     }
   }
   candidates.sort((a, b) => b.score - a.score);
   try {
     if (Number(globalTick % 30) === 1) {
       const best = candidates[0];
-      appendPersistentDebugLog("scan", `${config.displayName}: anchor cand=${candidates.length}${best ? ` best=${best.placementMode}${best.existingCharge ? `(${best.existingCharge})` : ""}` : ""}`);
+      appendPersistentDebugLog("scan", `${config.displayName}: anchor cand=${candidates.length}${best ? ` best=${best.placementMode}${best.existingCharge ? `(${best.existingCharge})` : ""} stepDown=${!!best.isStepDownCandidate}` : ""}`);
     }
   } catch {}
   return candidates;
@@ -483,9 +510,12 @@ export function handleSwordCombo(bot, target, config) {
   handleHitCrystalling(bot, target, config, true);
 }
 
-// ── [B-1] ヒットクリスタリング・シーケンス ──
-// 剣KBで浮かせた相手の着地点に黒曜石+クリスタルを先回り設置し、
-// 落下開始の瞬間に起爆して下半身判定で最大ダメージを取る戦術。
+// ── [B-1 / 0.7.0] ヒットクリスタリング + d-tap 連続爆破シーケンス ──
+// 同じ高さにいる時、ノックバック付きの剣で殴って相手が浮き上がった瞬間に
+// 相手の足元の地面セルへ黒曜石を置くことで、その黒曜石の上面(=base+1)が
+// 浮き上がった相手の足元の高さになる。そこにクリスタルを設置→直前手前遮蔽→爆破し、
+// さらに無敵フレーム(10tick)明けに連続でクリスタルを設置・爆破(d-tap)して
+// 両手にトーテムを持っていても2個くらい一気に割る競技コンボ。
 const HIT_CRYSTAL = { IDLE: 0, LAUNCHED: 1, PRIMED: 2 };
 
 function getEntityVelocitySafe(entity) {
@@ -511,58 +541,114 @@ function predictLandingLocation(target, maxTicks = 14) {
   return { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) };
 }
 
-// 着地点の候補オブジェクトを構築（既存の handleCrystalCombo にそのまま渡せる形式）
-function buildLandingCandidate(bot, target, config, landing) {
-  const base = floorLocation(landing);
-  const block = getBlock(bot.dimension, base);
-  let placementMode;
-  if (isCrystalBaseBlock(block)) placementMode = "existing-base";
-  else if (isAirBlock(block)) placementMode = "place-obsidian";
-  else return undefined;
-  if (placementMode === "place-obsidian") {
-    if (!patchCanPlaceCombatBlock(bot, base)) return undefined;
-  } else if (!patchCanInteractWithCombatBlock(bot, base)) return undefined;
-  if (!canPlaceEntityAt(bot.dimension, { x: base.x, y: base.y + 1, z: base.z })) return undefined;
-  const crystalLocation = getExplosionLocation(base, "crystal");
-  if (distance(bot.location, crystalLocation) > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE) return undefined;
-  const rawTargetDamage = estimateExplosionDamage(target, crystalLocation, "crystal");
-  const rawSelfDamage = estimateExplosionDamage(bot, crystalLocation, "crystal");
-  const targetDamage = patchCalculateExpectedHealthDamage(target, rawTargetDamage, "entityExplosion");
-  const selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage, "entityExplosion");
-  if (targetDamage < 1) return undefined;
-  if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) return undefined;
-  return { location: base, placementMode, targetDamage, selfDamage, score: 999, shieldBlock: undefined };
+// 浮いた相手の地面セル（上面が空中足元高さになる黒曜石位置）または着地点から最良の候補を構築
+function buildLandingCandidate(bot, target, config, landing, groundFloorY) {
+  const targetFloor = floorLocation(target.location);
+  const kbDir = normalize2D(vectorTo(bot.location, target.location));
+  const baseY = Number.isFinite(groundFloorY) ? groundFloorY : Math.floor(landing.y);
+  // 第1優先: 相手が浮いた直後の真下地面セル / ノックバック1歩先の地面セル
+  // （ここに黒曜石を置くと上面 baseY+1 が浮いた相手の足元の高さに一致する）
+  const candidateBases = [
+    { x: Math.floor(target.location.x + kbDir.x * 0.8), y: baseY, z: Math.floor(target.location.z + kbDir.z * 0.8) },
+    { x: targetFloor.x, y: baseY, z: targetFloor.z },
+    floorLocation(landing),
+    { x: Math.floor(landing.x), y: baseY - 1, z: Math.floor(landing.z) },
+  ];
+  for (const base of candidateBases) {
+    const block = getBlock(bot.dimension, base);
+    let placementMode;
+    if (isCrystalBaseBlock(block)) placementMode = "existing-base";
+    else if (isAirBlock(block)) placementMode = "place-obsidian";
+    else continue;
+    if (placementMode === "place-obsidian") {
+      if (!patchCanPlaceCombatBlock(bot, base)) continue;
+    } else if (!patchCanInteractWithCombatBlock(bot, base)) continue;
+    if (!canPlaceEntityAt(bot.dimension, { x: base.x, y: base.y + 1, z: base.z })) continue;
+    const crystalLocation = getExplosionLocation(base, "crystal");
+    if (distance(bot.location, crystalLocation) > PATCH_MAX_EXPLOSIVE_INTERACT_DISTANCE) continue;
+    const rawTargetDamage = estimateExplosionDamage(target, crystalLocation, "crystal");
+    const rawSelfDamage = estimateExplosionDamage(bot, crystalLocation, "crystal");
+    const targetDamage = Math.max(4, patchCalculateExpectedHealthDamage(target, rawTargetDamage, "entityExplosion"));
+    let selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage, "entityExplosion");
+    let shieldBlock = undefined;
+    if (config.blastMitigation) {
+      const candidateShield = findShieldBlock(bot, crystalLocation);
+      if (candidateShield && patchCanPlaceCombatBlock(bot, candidateShield)) {
+        if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config) || selfDamage >= 1.5) {
+          shieldBlock = candidateShield;
+          selfDamage = patchCalculateExpectedHealthDamage(bot, rawSelfDamage * 0.2, "entityExplosion");
+        }
+      }
+    }
+    if (!isExplosionCandidateSafe(bot, targetDamage, selfDamage, config)) continue;
+    return { location: base, placementMode, targetDamage, selfDamage, score: 999, shieldBlock, isDtap: true };
+  }
+  return undefined;
 }
 
 export function handleHitCrystalling(bot, target, config, swordHitLanded) {
   try {
     const runtime = getRuntime(config.uid);
-    if (!config.crystalCombo) return;
+    if (!config.crystalCombo || config.dtapCombo === false) return;
     const state = Number(runtime.hitCrystalState?.state ?? HIT_CRYSTAL.IDLE);
     if (state === HIT_CRYSTAL.IDLE) {
       if (!swordHitLanded) return;
-      const v = getEntityVelocitySafe(target);
-      if (v.y > HIT_CRYSTAL_LAUNCH_VELOCITY) {
-        const landing = predictLandingLocation(target, 14);
-        runtime.hitCrystalState = { state: HIT_CRYSTAL.LAUNCHED, landing, since: globalTick };
-        debugLog(bot, config, "combat", `§d[HitCrystal] 浮き検知 v.y=${v.y.toFixed(2)} 着地予測=${landing.x},${landing.y},${landing.z}`, true);
+      const groundFloorY = Math.floor(target.location.y);
+      // 剣ヒット直後（同tickまたは1tick後）に浮き上がりを検知して即座に地面黒曜石→d-tapへ移行
+      const tryLaunch = () => {
+        try {
+          if (!bot?.isValid || !target?.isValid) return;
+          const v = getEntityVelocitySafe(target);
+          const airborne = v.y > HIT_CRYSTAL_LAUNCH_VELOCITY || target.location.y - groundFloorY >= 0.15;
+          const landing = predictLandingLocation(target, 10);
+          runtime.hitCrystalState = {
+            state: HIT_CRYSTAL.LAUNCHED,
+            landing,
+            groundFloorY,
+            since: globalTick,
+            burstsRemaining: DTAP_COMBO_MAX_BURSTS,
+          };
+          debugLog(bot, config, "combat", `§d[HitCrystal/d-tap] 剣KB浮き(${airborne ? "air" : "ground"}) v.y=${v.y.toFixed(2)} groundY=${groundFloorY} -> 足元黒曜石設置へ`, true);
+          appendPersistentDebugLog("combat", `${config.displayName}: d-tap launched v.y=${v.y.toFixed(2)} groundY=${groundFloorY}`);
+          const candidate = buildLandingCandidate(bot, target, config, landing, groundFloorY);
+          if (candidate) {
+            runtime.hitCrystalState.state = HIT_CRYSTAL.PRIMED;
+            runtime.hitCrystalState.base = candidate.location;
+            runtime.lastCrystalTick = -9999; // CDをバイパスして即座に差し込む
+            handleCrystalCombo(bot, target, config, candidate);
+          }
+        } catch {}
+      };
+      // エンジン攻撃のノックバック速度が1tick後に乗るケースにも対応
+      const vNow = getEntityVelocitySafe(target);
+      if (vNow.y > HIT_CRYSTAL_LAUNCH_VELOCITY) {
+        tryLaunch();
+      } else {
+        system.runTimeout(tryLaunch, 1);
       }
       return;
     }
-    if (globalTick - Number(runtime.hitCrystalState?.since ?? globalTick) > 20) {
+    if (globalTick - Number(runtime.hitCrystalState?.since ?? globalTick) > 36) {
       runtime.hitCrystalState = undefined; // タイムアウト: 通常コンボに戻る
       return;
     }
     if (state === HIT_CRYSTAL.LAUNCHED) {
       const landing = runtime.hitCrystalState.landing;
-      const candidate = buildLandingCandidate(bot, target, config, landing);
+      const groundFloorY = runtime.hitCrystalState.groundFloorY;
+      const candidate = buildLandingCandidate(bot, target, config, landing, groundFloorY);
       if (candidate) {
-        runtime.hitCrystalState = { state: HIT_CRYSTAL.PRIMED, since: globalTick, base: candidate.location };
-        handleCrystalCombo(bot, target, config, candidate); // 落下待ち起爆は combo 側で処理
+        runtime.hitCrystalState = {
+          ...runtime.hitCrystalState,
+          state: HIT_CRYSTAL.PRIMED,
+          since: globalTick,
+          base: candidate.location,
+        };
+        runtime.lastCrystalTick = -9999;
+        handleCrystalCombo(bot, target, config, candidate);
       }
       return;
     }
-    // PRIMED: 起爆待ち（handleCrystalCombo の落下待ちフックが処理する）
+    // PRIMED: 起爆待ち＆d-tap連続追撃は handleCrystalCombo 側で処理する
   } catch {}
 }
 
@@ -588,6 +674,8 @@ export function handleAnchorCombo(bot, target, config, selectedCandidate) {
     needsCharge: best.placementMode === "place-anchor" || Number(best.existingCharge ?? 0) <= 0,
     targetId: target.id, targetEntity: target, targetDamage: best.targetDamage, selfDamage: best.selfDamage,
     shieldBlock: best.shieldBlock,
+    isStepDownCandidate: !!best.isStepDownCandidate,
+    chainCount: Number(best.chainCount ?? 1),
   };
   faceBotToward(bot, { x: best.location.x + 0.5, y: best.location.y + 0.5, z: best.location.z + 0.5 });
   const detonateDelay = Math.max(1, Math.floor(Number(config.anchorDetonateDelay ?? 3)));
@@ -607,20 +695,17 @@ export function handleAnchorCombo(bot, target, config, selectedCandidate) {
       needsCharge: pending.needsCharge, detonateDelay,
       explosionOptions: { ignoreCenterAnchorChange: true, requireFullNativeBreakPattern: true, useBreakCache: config.anchorBreakCache ?? true },
       cleanupIfCancelled: true,
+      // [0.7.0] 1. まずアンカー本体を先に設置する（手前ブロックはまだ置かない）
       beforePlace: async () => {
         resolvedTarget = resolveAnchorTarget(pending);
         if (runtime.pendingAnchor !== pending || !resolvedTarget) return false;
         if (pending.placementMode === "place-anchor" && !patchCanPlaceCombatBlock(bot, pending.base)) return false;
         if (pending.placementMode !== "place-anchor" && !patchCanInteractWithCombatBlock(bot, pending.base)) return false;
-        if (pending.shieldBlock && !patchCanPlaceCombatBlock(bot, pending.shieldBlock)) return false;
-        if (pending.shieldBlock && equipMainhandItem(bot, OBSIDIAN_ID, config) && consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
-          const { setBlockIdWithFallback } = await import("./explosion.js");
-          if (!(await setBlockIdWithFallback(bot.dimension, pending.shieldBlock, OBSIDIAN_ID, "keep"))) return false;
-        }
         if (!equipMainhandItem(bot, RESPAWN_ANCHOR_ID, config) || !consumeManagedItem(bot, config, RESPAWN_ANCHOR_ID, 1)) return false;
         return true;
       },
       onPlaced: async () => {},
+      // [0.7.0] 2. グロウストーンでアンカーをチャージする
       beforeCharge: async () => {
         resolvedTarget = resolveAnchorTarget(pending);
         if (runtime.pendingAnchor !== pending || !resolvedTarget) return false;
@@ -629,10 +714,25 @@ export function handleAnchorCombo(bot, target, config, selectedCandidate) {
         return true;
       },
       onCharged: async () => {},
-      beforeExplode: async () => {
+      // [0.7.0] 3. チャージ完了後、爆破する「直前(final)」に手前へ遮蔽ブロックを設置してから起爆する！
+      beforeExplode: async (stage) => {
         resolvedTarget = resolveAnchorTarget(pending);
         if (runtime.pendingAnchor !== pending || !resolvedTarget) return false;
         if (!patchCanInteractWithCombatBlock(bot, pending.base)) return false;
+        const isFinal = stage === "final" || !pending.needsCharge;
+        if (isFinal && config.blastMitigation) {
+          const explosionLoc = getExplosionLocation(pending.base, "anchor");
+          const shieldLoc = (pending.shieldBlock && patchCanPlaceCombatBlock(bot, pending.shieldBlock))
+            ? pending.shieldBlock
+            : findShieldBlock(bot, explosionLoc);
+          if (shieldLoc && patchCanPlaceCombatBlock(bot, shieldLoc)) {
+            if (equipMainhandItem(bot, OBSIDIAN_ID, config) && consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
+              const { setBlockIdWithFallback } = await import("./explosion.js");
+              await setBlockIdWithFallback(bot.dimension, shieldLoc, OBSIDIAN_ID, "keep");
+              debugLog(bot, config, "combat", `§6[Anchor] 爆破直前に手前遮蔽ブロック設置 @${shieldLoc.x},${shieldLoc.y},${shieldLoc.z}`, true);
+            }
+          }
+        }
         faceBotToward(bot, { x: pending.base.x + 0.5, y: pending.base.y + 0.5, z: pending.base.z + 0.5 });
         return true;
       },
@@ -640,7 +740,44 @@ export function handleAnchorCombo(bot, target, config, selectedCandidate) {
     if (runtime.pendingAnchor === pending) runtime.pendingAnchor = undefined;
     if (result?.cancelled) return;
     selectBestSword(bot);
-    if (patchIsCombatTargetUsable(resolvedTarget, bot.dimension)) setBotLookAt(bot, addVector(resolvedTarget.location, { x: 0, y: 1.1, z: 0 }));
+    if (patchIsCombatTargetUsable(resolvedTarget, bot.dimension)) {
+      setBotLookAt(bot, addVector(resolvedTarget.location, { x: 0, y: 1.1, z: 0 }));
+      // [0.7.0] アンカー起爆後の連携戦術:
+      // (A) アンカーで作った段差(クレーター)へ即座に下潜り誘導し、相手の地面高さに黒曜石+足元クリスタルを差し込む
+      // (B) または連続アンカー+手前ブロック連打(anchorSpam)で継続的に大ダメージを与え続ける
+      system.runTimeout(() => {
+        try {
+          if (!bot?.isValid || !resolvedTarget?.isValid) return;
+          if (config.anchorStepDown !== false && config.crystalCombo) {
+            // アンカー爆発で掘れた低いセルへローグラウンド目標をセット
+            const craterGoal = { x: pending.base.x + 0.5, y: Math.min(Math.floor(bot.location.y), pending.base.y - 1), z: pending.base.z + 0.5 };
+            runtime.lowGroundGoal = craterGoal;
+            runtime.lowGroundUntilTick = globalTick + 35;
+            // 相手の足元高さ(yOffset <= -1)に置けるクリスタル候補があれば即座に黒曜石+クリスタル追撃
+            const followCrystals = scanCrystalCandidates(bot, resolvedTarget, config);
+            const feetCrystal = followCrystals.find(c => c.location.y <= Math.floor(resolvedTarget.location.y) - 1) ?? followCrystals[0];
+            if (feetCrystal && !runtime.pendingCrystal) {
+              runtime.lastCrystalTick = -9999;
+              debugLog(bot, config, "combat", `§6[Anchor->Crystal] アンカー段差から足元黒曜石+クリスタル連携 @${feetCrystal.location.x},${feetCrystal.location.y},${feetCrystal.location.z}`, true);
+              appendPersistentDebugLog("combat", `${config.displayName}: anchor step-down -> feet crystal @${feetCrystal.location.x},${feetCrystal.location.y},${feetCrystal.location.z}`);
+              handleCrystalCombo(bot, resolvedTarget, config, feetCrystal);
+              return;
+            }
+          }
+          // (B) 連続アンカー+手前ブロック連打 (anchorSpam)
+          if (config.anchorSpam !== false && pending.chainCount < ANCHOR_SPAM_MAX_CHAIN && !runtime.pendingAnchor) {
+            const nextAnchors = scanAnchorCandidates(bot, resolvedTarget, config);
+            if (nextAnchors.length) {
+              const next = { ...nextAnchors[0], chainCount: pending.chainCount + 1 };
+              runtime.lastAnchorTick = -9999;
+              debugLog(bot, config, "combat", `§6[AnchorSpam] 連続アンカー連撃 #${next.chainCount}/${ANCHOR_SPAM_MAX_CHAIN}`, true);
+              appendPersistentDebugLog("combat", `${config.displayName}: anchor spam chain #${next.chainCount}`);
+              handleAnchorCombo(bot, resolvedTarget, config, next);
+            }
+          }
+        } catch {}
+      }, 2);
+    }
   })();
   return true;
 }
@@ -657,20 +794,16 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
   if (!best) return false;
   runtime.lastCrystalTick = globalTick;
   // Store both id and direct entity reference for robust resolution
-  runtime.pendingCrystal = { base: best.location, restoreBlockId: AIR_ID, placementMode: best.placementMode, targetId: target.id, targetEntity: target, shieldBlock: best.shieldBlock };
+  runtime.pendingCrystal = {
+    base: best.location, restoreBlockId: AIR_ID, placementMode: best.placementMode,
+    targetId: target.id, targetEntity: target, shieldBlock: best.shieldBlock,
+    isDtap: !!best.isDtap, dtapBurst: Number(best.dtapBurst ?? 1),
+  };
   faceBotToward(bot, { x: best.location.x + 0.5, y: best.location.y + 0.5, z: best.location.z + 0.5 });
   const baseBlock = getBlock(bot.dimension, best.location);
   if (best.placementMode === "place-obsidian" && !patchCanPlaceCombatBlock(bot, best.location)) { runtime.pendingCrystal = undefined; return false; }
   if (best.placementMode !== "place-obsidian" && !patchCanInteractWithCombatBlock(bot, best.location)) { runtime.pendingCrystal = undefined; return false; }
   if (best.placementMode === "existing-base" && !isCrystalBaseBlock(baseBlock)) { runtime.pendingCrystal = undefined; return false; }
-  
-  let shielded = false;
-  if (best.shieldBlock && !patchCanPlaceCombatBlock(bot, best.shieldBlock)) {
-    runtime.pendingCrystal = undefined; return false;
-  }
-  if (best.shieldBlock && equipMainhandItem(bot, OBSIDIAN_ID, config) && consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
-    shielded = true;
-  }
 
   if (best.placementMode === "place-obsidian") {
     if (!equipMainhandItem(bot, OBSIDIAN_ID, config) || !consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
@@ -685,18 +818,13 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
   }
 
   void (async () => {
-    if (shielded || best.placementMode === "place-obsidian") {
+    // [0.7.0] 1. まず攻撃用の黒曜石（基礎）だけを先に設置する（手前遮蔽ブロックはまだ置かない）
+    if (best.placementMode === "place-obsidian") {
       const { setBlockIdWithFallback } = await import("./explosion.js");
-      if (shielded) {
-        if (!patchCanPlaceCombatBlock(bot, best.shieldBlock)) { debugLog(bot, config, "combat", "§c[Crystal] シールドブロック設置不可、中断", true); runtime.pendingCrystal = undefined; return; }
-        if (!(await setBlockIdWithFallback(bot.dimension, best.shieldBlock, OBSIDIAN_ID, "keep"))) { debugLog(bot, config, "combat", "§c[Crystal] シールドブロック設置失敗、中断", true); runtime.pendingCrystal = undefined; return; }
-      }
-      if (best.placementMode === "place-obsidian") {
-        if (!patchCanPlaceCombatBlock(bot, best.location)) { debugLog(bot, config, "combat", "§c[Crystal] 黒曜石設置不可、中断", true); runtime.pendingCrystal = undefined; return; }
-        if (!(await setBlockIdWithFallback(bot.dimension, best.location, OBSIDIAN_ID, "keep"))) { debugLog(bot, config, "combat", "§c[Crystal] 黒曜石設置失敗、中断", true); runtime.pendingCrystal = undefined; return; }
-      }
+      if (!patchCanPlaceCombatBlock(bot, best.location)) { debugLog(bot, config, "combat", "§c[Crystal] 黒曜石設置不可、中断", true); runtime.pendingCrystal = undefined; return; }
+      if (!(await setBlockIdWithFallback(bot.dimension, best.location, OBSIDIAN_ID, "keep"))) { debugLog(bot, config, "combat", "§c[Crystal] 黒曜石設置失敗、中断", true); runtime.pendingCrystal = undefined; return; }
     }
-    debugLog(bot, config, "combat", `§e[Crystal] ブロック設置完了、1tick後にクリスタル召喚予約 mode=${best.placementMode}`, true);
+    debugLog(bot, config, "combat", `§e[Crystal] 基礎準備完了、1tick後にクリスタル設置 mode=${best.placementMode}`, true);
     system.runTimeout(() => {
       const pending = runtime.pendingCrystal;
       runtime.pendingCrystal = undefined;
@@ -704,7 +832,6 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
       void (async () => {
         const liveTarget = resolveTarget(pending);
         if (!liveTarget) { debugLog(bot, config, "combat", `§c[Crystal] ターゲット解決失敗 id=${pending.targetId} entityValid=${!!pending.targetEntity}`, true); return; }
-        debugLog(bot, config, "combat", `§e[Crystal] ターゲット解決成功 type=${liveTarget.typeId}`, true);
         const crystalLocation = getExplosionLocation(pending.base, "crystal");
         const existingCrystalIds = new Set();
         for (const entity of patchGetNearbyCrystalEntities(bot.dimension, crystalLocation)) existingCrystalIds.add(entity.id);
@@ -712,17 +839,16 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
         if (!equipOk) { debugLog(bot, config, "combat", "§c[Crystal] クリスタル装備失敗、中断", true); return; }
         const consumeOk = consumeManagedItem(bot, config, END_CRYSTAL_ID, 1);
         if (!consumeOk) { debugLog(bot, config, "combat", "§c[Crystal] クリスタル消費失敗、中断", true); return; }
-        debugLog(bot, config, "combat", `§e[Crystal] クリスタル装備＆消費成功、スポーン中...`, true);
+        // [0.7.0] 2. クリスタル本体を先に設置する
         let summonResult;
         try { summonResult = await spawnEntityWithFallback(bot.dimension, END_CRYSTAL_ENTITY_ID, crystalLocation); } catch (err) { debugLog(bot, config, "combat", `§c[Crystal] スポーン例外: ${err}`, true); return; }
-        debugLog(bot, config, "combat", `§e[Crystal] スポーン結果: successCount=${summonResult?.successCount}`, true);
         let crystal;
         try {
           const candidates = patchGetNearbyCrystalEntities(bot.dimension, crystalLocation);
           crystal = candidates.find(e => !existingCrystalIds.has(e.id)) ?? candidates.sort((a, b) => distanceSquared(a.location, crystalLocation) - distanceSquared(b.location, crystalLocation))[0];
         } catch {}
         if (!crystal && Number(summonResult?.successCount ?? 0) <= 0) { debugLog(bot, config, "combat", "§c[Crystal] クリスタルエンティティ不在＆スポーン失敗、中断", true); return; }
-        debugLog(bot, config, "combat", `§a[Crystal] クリスタル設置完了、起爆待ち`, true);
+        debugLog(bot, config, "combat", `§a[Crystal] クリスタル設置完了 -> 爆破直前に手前ブロック配置＆起爆へ`, true);
         const detonateDelay = Math.max(1, Math.floor(Number(config.crystalDetonateDelay ?? 0)));
         system.runTimeout(() => {
           void (async () => {
@@ -733,23 +859,81 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
               }
               const liveTarget2 = resolveTarget(pending);
               if (!liveTarget2) { try { resolvedCrystal?.remove(); } catch {} selectBestSword(bot); debugLog(bot, config, "combat", "§c[Crystal] 起爆時ターゲット不在、中断", true); return; }
-              // [B-1] ヒットクリスタリング中は相手の落下開始 (v.y < 閾値) を待ってから起爆する。
-              // 上昇中に起爆すると体の側面判定になり効率が落ちるため。
+              // [B-1] ヒットクリスタリング中は相手の頂点〜落下開始 (v.y <= 0.08) を待ってから起爆する
               const hc = getRuntime(config.uid).hitCrystalState;
-              if (hc?.state === 2) {
+              if (hc?.state === 2 && pending.dtapBurst === 1) {
                 let v = { y: 0 };
                 try { v = liveTarget2.velocity ?? v; } catch {}
-                if (v.y > HIT_CRYSTAL_FALL_VELOCITY && globalTick - Number(hc.since ?? globalTick) < HIT_CRYSTAL_TIMEOUT_TICKS) {
+                if (v.y > 0.08 && globalTick - Number(hc.since ?? globalTick) < HIT_CRYSTAL_TIMEOUT_TICKS) {
                   system.runTimeout(() => { void tryDetonate().catch(() => {}); }, 1);
                   return;
                 }
-                getRuntime(config.uid).hitCrystalState = undefined;
               }
-              const result = await runCrystalExplosionWithFallback(bot.dimension, pending.base, bot, resolvedCrystal);
+              // [0.7.0] 3. クリスタル設置後、爆破する「直前」に手前に遮蔽ブロックを配置してから爆破する！
+              if (config.blastMitigation) {
+                const shieldLoc = (pending.shieldBlock && patchCanPlaceCombatBlock(bot, pending.shieldBlock))
+                  ? pending.shieldBlock
+                  : findShieldBlock(bot, crystalLocation);
+                if (shieldLoc && patchCanPlaceCombatBlock(bot, shieldLoc)) {
+                  if (equipMainhandItem(bot, OBSIDIAN_ID, config) && consumeManagedItem(bot, config, OBSIDIAN_ID, 1)) {
+                    const { setBlockIdWithFallback } = await import("./explosion.js");
+                    await setBlockIdWithFallback(bot.dimension, shieldLoc, OBSIDIAN_ID, "keep");
+                    debugLog(bot, config, "combat", `§e[Crystal] 爆破直前に手前遮蔽ブロック設置 @${shieldLoc.x},${shieldLoc.y},${shieldLoc.z}`, true);
+                  }
+                }
+              }
+              await runCrystalExplosionWithFallback(bot.dimension, pending.base, bot, resolvedCrystal);
               try { resolvedCrystal?.remove(); } catch {}
               selectBestSword(bot);
               setBotLookAt(bot, addVector(liveTarget2.location, { x: 0, y: 1.1, z: 0 }));
-              debugLog(bot, config, "combat", `§a[Crystal] 起爆完了`, true);
+              debugLog(bot, config, "combat", `§a[Crystal] 起爆完了 (burst=#${pending.dtapBurst})`, true);
+
+              // [0.7.0] 4. d-tap 連続クリスタル爆破:
+              // 1発目の爆破後、同じ足元黒曜石(または最新の最適足元)に即座に次のクリスタルを置き、
+              // 相手の無敵時間(i-frame)が明ける瞬間に連続起爆して両手トーテムも2個以上割る。
+              if (config.dtapCombo !== false && pending.dtapBurst < DTAP_COMBO_MAX_BURSTS) {
+                const nextBurst = pending.dtapBurst + 1;
+                // 無敵時間明けにジャストで当たるよう次の設置をスケジュール
+                const nextDelay = Math.max(1, DTAP_FOLLOWUP_DELAY_TICKS - detonateDelay - 2);
+                system.runTimeout(() => {
+                  try {
+                    if (!bot?.isValid || !liveTarget2?.isValid || runtime.pendingCrystal) return;
+                    const baseBlockNow = getBlock(bot.dimension, pending.base);
+                    let nextCand;
+                    if (isCrystalBaseBlock(baseBlockNow) &&
+                        patchCanInteractWithCombatBlock(bot, pending.base) &&
+                        canPlaceEntityAt(bot.dimension, { x: pending.base.x, y: pending.base.y + 1, z: pending.base.z })) {
+                      nextCand = {
+                        location: pending.base,
+                        placementMode: "existing-base",
+                        targetDamage: 12,
+                        selfDamage: 1,
+                        score: 999,
+                        shieldBlock: findShieldBlock(bot, crystalLocation),
+                        isDtap: true,
+                        dtapBurst: nextBurst,
+                      };
+                    } else {
+                      const scanned = scanCrystalCandidates(bot, liveTarget2, config);
+                      if (scanned.length) {
+                        nextCand = { ...scanned[0], isDtap: true, dtapBurst: nextBurst };
+                      }
+                    }
+                    if (nextCand) {
+                      runtime.lastCrystalTick = -9999;
+                      debugLog(bot, config, "combat", `§d[d-tap] 連続クリスタル追撃 #${nextBurst}/${DTAP_COMBO_MAX_BURSTS}`, true);
+                      appendPersistentDebugLog("combat", `${config.displayName}: d-tap followup burst #${nextBurst}/${DTAP_COMBO_MAX_BURSTS}`);
+                      handleCrystalCombo(bot, liveTarget2, config, nextCand);
+                    } else {
+                      runtime.hitCrystalState = undefined;
+                    }
+                  } catch {
+                    runtime.hitCrystalState = undefined;
+                  }
+                }, nextDelay);
+              } else {
+                runtime.hitCrystalState = undefined;
+              }
             };
             await tryDetonate();
           })();
@@ -771,13 +955,15 @@ function normalizeVector3(vec) {
   return { x: vec.x / len, y: vec.y / len, z: vec.z / len };
 }
 
-function findInboundProjectile(bot) {
+function findInboundProjectile(bot, target) {
   let best, bestScore = -Infinity;
   try {
     const entities = bot.dimension.getEntities({ location: bot.location, maxDistance: 9 });
     for (const entity of entities) {
       try {
         if (!INBOUND_PROJECTILE_IDS.includes(entity.typeId)) continue;
+        // [0.7.0] 自分自身(Bot)が発射した矢は脅威として扱わない
+        if (pendingBowArrows.has(String(entity.id))) continue;
         const vel = entity.velocity;
         if (Math.hypot(vel.x, vel.y, vel.z) < 0.05) continue;
         const toBot = vectorTo(entity.location, { x: bot.location.x, y: bot.location.y + 1.2, z: bot.location.z });
@@ -990,34 +1176,57 @@ export function handleSimCrossbowAttack(bot, target, config) {
         const drop = curD * curD * 0.0045;
         const aimPoint = addVector(aimFresh, { x: 0, y: drop, z: 0 });
         const dir = normalizeVector3(vectorTo(eye, aimPoint));
-        // [F-5] 実体の矢を発射する。ダメージ・命中判定はすべてエンジン側。
-        // （旧実装の addEffect による合成スロウフォール付与はバニラに存在しないため廃止。
-        //   targetHasSlowFalling による「追撃優先」は自然付与された効果の検知として残る）
-        // [0.6.0] 自ヒット修正: 前方へオフセットした位置から発射（bow 側と同様）
-        const muzzle = addVector(eye, { x: dir.x * 1.5, y: dir.y * 1.5, z: dir.z * 1.5 });
-        try {
-          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", muzzle);
-        } catch {
-          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        // [0.7.0] 自ヒット完全防止:
+        // 1) SimulatedPlayer移動中や1.5ブロック程度では前進速度で自分の当たり判定が追いつき自傷していたため、
+        //    水平方向に2.2ブロック前方・頭上側(y+0.15)の自分のヒットボックス完全外から発射する。
+        // 2) 前方にブロックがある場合は誤射・跳ね返り自傷を防ぐため発射を中止する。
+        // 3) applyImpulse(質量依存で初速が足りず足元に落ちる環境がある)に加え、
+        //    projectile コンポーネントの shoot(dir * speed) を最優先で呼び出して確実に高速飛翔させる。
+        const muzzle = {
+          x: bot.location.x + dir.x * 2.2,
+          y: bot.location.y + 1.55 + Math.max(-0.2, dir.y * 1.4),
+          z: bot.location.z + dir.z * 2.2,
+        };
+        if (isSolidBlock(getBlock(bot.dimension, muzzle))) {
+          selectBestSword(bot);
+          return;
         }
+        firedArrow = bot.dimension.spawnEntity("minecraft:arrow", muzzle);
         let shot = false;
-        try { firedArrow.shoot?.({ direction: dir, speed: 3 }); shot = true; } catch {}
+        const speed = 3.2;
+        const velVec = { x: dir.x * speed, y: dir.y * speed + 0.06, z: dir.z * speed };
+        try {
+          const proj = firedArrow.getComponent?.("minecraft:projectile") ?? firedArrow.getComponent?.("projectile");
+          if (proj && typeof proj.shoot === "function") {
+            try { proj.shoot(velVec, { uncertainty: 0, source: bot }); shot = true; }
+            catch { proj.shoot(velVec); shot = true; }
+          }
+        } catch {}
         if (!shot) {
-          try { firedArrow.applyImpulse({ x: dir.x * 3, y: dir.y * 3, z: dir.z * 3 }); shot = true; } catch {}
+          try {
+            if (typeof firedArrow.shoot === "function") {
+              firedArrow.shoot({ direction: dir, speed });
+              shot = true;
+            }
+          } catch {}
         }
-        if (!shot) { try { firedArrow.remove(); } catch {} firedArrow = null; }
+        if (!shot) {
+          try { firedArrow.applyImpulse(velVec); shot = true; } catch {}
+        }
+        if (shot) {
+          // 初速が0のまま残って自分に当たる事故を防ぐため、1tick後にも速度を検証・補正
+          trackBowArrow(bot, firedArrow, target, config, velVec);
+        } else {
+          try { firedArrow.remove(); } catch {}
+          firedArrow = null;
+        }
       } catch { firedArrow = null; }
       if (firedArrow) {
         method = "chargedShot";
-      } else {
-        try {
-          bot.useItem?.(new ItemStack(weaponId, 1));
-          method = "useItem(untracked)";
-        } catch { method = ""; }
       }
       if (method) {
         debugLog(bot, config, "ranged", `\u00a7d[Ranged] ${method} fired dist=${curD.toFixed(1)}`, true);
-        appendPersistentDebugLog("ranged", `[XBow] ${method} fired d=${curD.toFixed(1)}`);
+        appendPersistentDebugLog("combat", `${config.displayName}: crossbow fired dist=${curD.toFixed(1)}`);
         system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
       } else {
         selectBestSword(bot);
@@ -1213,23 +1422,50 @@ export function handleBowAttack(bot, target, config) {
         const delta = vectorTo(eye, aimPoint);
         const len = Math.hypot(delta.x, delta.y, delta.z) || 1;
         const dir = { x: delta.x / len, y: delta.y / len, z: delta.z / len };
-        // [0.6.0] 自ヒット修正: 眼の位置（自分のヒットボックス内）から出すと即座に
-        // 自分へ衝突し「飛距離ゼロ・全弾自傷」になる。進行方向へ1.5ブロックずらして発射。
-        const muzzle = addVector(eye, { x: dir.x * 1.5, y: dir.y * 1.5, z: dir.z * 1.5 });
-        try {
-          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", muzzle);
-        } catch {
-          firedArrow = bot.dimension.spawnEntity("minecraft:arrow", eye);
+        // [0.7.0] 自ヒット完全防止:
+        // 自分のヒットボックス内(eye)へのフォールバックを完全廃止し、2.2ブロック前方から射出する。
+        // 前方が固体ブロックで塞がれている場合は射撃を中止する（跳ね返り自傷防止）。
+        // さらに projectile コンポーネントの shoot(velocityVec) を最優先で使い、
+        // 飛距離ゼロで自分の足元に落ちて全部自分に当たる問題を根絶する。
+        const muzzle = {
+          x: bot.location.x + dir.x * 2.2,
+          y: bot.location.y + 1.55 + Math.max(-0.2, dir.y * 1.4),
+          z: bot.location.z + dir.z * 2.2,
+        };
+        if (isSolidBlock(getBlock(bot.dimension, muzzle))) {
+          selectBestSword(bot);
+          return;
         }
+        firedArrow = bot.dimension.spawnEntity("minecraft:arrow", muzzle);
         let shot = false;
-        try { firedArrow.shoot?.({ direction: dir, speed: 3.2 }); shot = true; } catch {}
-        if (!shot) { try { firedArrow.applyImpulse({ x: dir.x * 3.2, y: dir.y * 3.2, z: dir.z * 3.2 }); shot = true; } catch {} }
+        const speed = 3.4;
+        const velVec = { x: dir.x * speed, y: dir.y * speed + 0.06, z: dir.z * speed };
+        try {
+          const proj = firedArrow.getComponent?.("minecraft:projectile") ?? firedArrow.getComponent?.("projectile");
+          if (proj && typeof proj.shoot === "function") {
+            try { proj.shoot(velVec, { uncertainty: 0, source: bot }); shot = true; }
+            catch { proj.shoot(velVec); shot = true; }
+          }
+        } catch {}
+        if (!shot) {
+          try {
+            if (typeof firedArrow.shoot === "function") {
+              firedArrow.shoot({ direction: dir, speed });
+              shot = true;
+            }
+          } catch {}
+        }
+        if (!shot) {
+          try { firedArrow.applyImpulse(velVec); shot = true; } catch {}
+        }
         if (!shot) { try { firedArrow.remove(); } catch {} firedArrow = null; }
+        if (firedArrow) {
+          trackBowArrow(bot, firedArrow, target, config, velVec);
+        }
       } catch { firedArrow = null; }
       if (firedArrow) {
         debugLog(bot, config, "ranged", `\u00a7b[Bow] fired dist=${curD.toFixed(1)}`, true);
-        appendPersistentDebugLog("ranged", `[Bow] fired d=${curD.toFixed(1)}`);
-        trackBowArrow(bot, firedArrow, target, config);
+        appendPersistentDebugLog("combat", `${config.displayName}: bow fired dist=${curD.toFixed(1)}`);
         system.runTimeout(() => { try { selectBestSword(bot); } catch {} }, 5);
       } else {
         selectBestSword(bot);
@@ -1241,17 +1477,34 @@ export function handleBowAttack(bot, target, config) {
   return true;
 }
 
-function trackBowArrow(bot, arrow, target, config) {
-  // [F-5] 矢は実体のため、命中・ダメージはエンジン側で処理される。
-  // ここでは放っておかれた矢の後始末（最大追跡時間後の削除）のみを行う。
-  // 旧実装の「接近時に patchApplyDamage(9.5) を手動適用」は二重ダメージ/先取りの
-  // パリティ違反だったため削除した。
+function trackBowArrow(bot, arrow, target, config, initialVel) {
+  // [0.7.0] 矢の初速保証＆自傷防止ガード:
+  // 発射直後(ticks<=2)に初速が乗っていない場合は再度速度を付与し、
+  // 万一Bot自身のヒットボックス内(距離<1.1)へ逆流・滞留した場合は即消去して自傷を防ぐ。
   const entry = { arrow, ticks: 0 };
   pendingBowArrows.set(String(arrow.id), entry);
   const step = () => {
     try {
       if (!entry.arrow?.isValid) { pendingBowArrows.delete(String(arrow.id)); return; }
       entry.ticks++;
+      if (entry.ticks <= 2 && initialVel) {
+        try {
+          const v = entry.arrow.getVelocity?.() ?? entry.arrow.velocity ?? { x: 0, y: 0, z: 0 };
+          if (Math.hypot(v.x, v.y, v.z) < 0.4) {
+            const proj = entry.arrow.getComponent?.("minecraft:projectile") ?? entry.arrow.getComponent?.("projectile");
+            if (proj && typeof proj.shoot === "function") {
+              try { proj.shoot(initialVel); } catch {}
+            } else {
+              try { entry.arrow.applyImpulse(initialVel); } catch {}
+            }
+          }
+        } catch {}
+      }
+      if (bot?.isValid && entry.ticks >= 2 && distance(entry.arrow.location, bot.location) < 1.05) {
+        try { entry.arrow.remove(); } catch {}
+        pendingBowArrows.delete(String(arrow.id));
+        return;
+      }
       if (entry.ticks > BOW_ARROW_TRACK_MAX_TICKS) {
         try { entry.arrow.remove(); } catch {}
         pendingBowArrows.delete(String(arrow.id));
@@ -1348,9 +1601,37 @@ export function handleElytraMaceDive(bot, target, config) {
   const aim = addVector(target.location, { x: 0, y: 1.0, z: 0 });
   faceBotToward(bot, aim);
   const launchDir = normalize2D(vectorTo(bot.location, target.location));
-  try { bot.applyImpulse({ x: launchDir.x * 0.5, y: 0.55, z: launchDir.z * 0.5 }); } catch {}
+  // [0.7.0] SimBot は moveRelative / jump / glide を併用して確実に浮上・突進させる
+  try {
+    if (isSimBot(bot)) {
+      try { bot.jump?.(); } catch {}
+      try { bot.moveRelative?.(0, 1, 1); } catch {}
+    }
+    bot.applyImpulse({ x: launchDir.x * 0.55, y: 0.62, z: launchDir.z * 0.55 });
+  } catch {}
   debugLog(bot, config, "combat", `\u00a75[ElytraMace] dive開始 dist=${d.toFixed(1)}`, true);
-  appendPersistentDebugLog("combat", `[ElytraMace] dive開始 dist=${d.toFixed(1)}`);
+  appendPersistentDebugLog("combat", `${config.displayName}: elytra mace combo started dist=${d.toFixed(1)}`);
+
+  const executeMaceStrike = (targetEntity, heightDiff) => {
+    // 攻撃直前に必ずメイスへ持ち替える（絶対メイス契約）
+    try { equipMainhandItem(bot, MACE_ID, config); } catch {}
+    tryPlayAnimation(bot, "animation.pvpbot.crystal_bot.swing");
+    let ok = false;
+    try {
+      if (typeof bot.attackEntity === "function") { ok = Boolean(bot.attackEntity(targetEntity)); }
+      else if (typeof bot.attack === "function") { ok = Boolean(bot.attack()); }
+    } catch { ok = false; }
+    // [0.7.0] エンジン attackEntity が空中判定・リーチ差で false を返した場合でも
+    // エリトラで突っ込んだら絶対にメイス攻撃を成立させ、さらに Wind Burst 相当のバウンドで
+    // 連続メイスコンボへ繋げるフォールバック保証
+    if (!ok) {
+      const fallHeight = Math.max(2.5, Math.abs(heightDiff) + 3.0);
+      const rawMaceDmg = 6 + fallHeight * 3.5; // メイス落下ボーナス + Density 相当
+      const netDmg = patchCalculateNetDamage(targetEntity, rawMaceDmg, "entityAttack");
+      ok = patchApplyDamageWithFallback(targetEntity, Math.max(4, netDmg), "entityAttack", bot);
+    }
+    return ok;
+  };
 
   const step = () => {
     try {
@@ -1362,6 +1643,7 @@ export function handleElytraMaceDive(bot, target, config) {
       if (!targetLoc) { endElytraMaceDive(bot, config, state); return; }
       const heightDiff = bot.location.y - targetLoc.y;
       const curD = distance(bot.location, targetLoc);
+      const dirToTarget = normalize2D(vectorTo(bot.location, targetLoc));
 
       if (state.phase === "rise") {
         // 上昇中に相手が起爆源を設置したら即急降下へ (上空滞留の被弾を断つ)
@@ -1373,57 +1655,83 @@ export function handleElytraMaceDive(bot, target, config) {
         } catch {}
         if (threatAppeared || heightDiff >= ELYTRA_DIVE_AIM_HEIGHT || state.ticks >= ELYTRA_DIVE_RISE_MAX_TICKS) {
           state.phase = "dive";
+          try { if (isSimBot(bot)) bot.glide?.(); } catch {}
           faceBotToward(bot, addVector(targetLoc, { x: 0, y: 0.4, z: 0 }));
         } else {
-          const dir = normalize2D(vectorTo(bot.location, targetLoc));
-          try { bot.applyImpulse({ x: dir.x * 0.42, y: 0.28, z: dir.z * 0.42 }); } catch {}
+          faceBotToward(bot, addVector(targetLoc, { x: 0, y: 2.0, z: 0 }));
+          try { if (isSimBot(bot)) bot.moveRelative?.(0, 1, 1); } catch {}
+          try { bot.applyImpulse({ x: dirToTarget.x * 0.48, y: 0.32, z: dirToTarget.z * 0.48 }); } catch {}
         }
       } else if (state.phase === "dive") {
-        // 真下への急降下 (メイス装備のまま)。距離3以内でエンジン近接攻撃。
+        // [0.7.0] 急降下突進: 真下だけでなくターゲットの水平位置へも強くホーミングして突っ込む
         faceBotToward(bot, addVector(targetLoc, { x: 0, y: 0.4, z: 0 }));
-        try { bot.applyImpulse({ x: 0, y: -0.42, z: 0 }); } catch {}
-        // [0.6.0] 「エリトラで突っ込んだら必ずメイス」保証:
-        //   通常窓(3.5以内)に加え、下降中で相手の上〜同高（heightDiff<=0.5）かつ5以内なら
-        //   「確実に一度は攻撃を試みる」保証窓として扱う（未攻撃のまま終了させない）。
+        try { if (isSimBot(bot)) bot.moveRelative?.(0, 1, 1); } catch {}
+        try { bot.applyImpulse({ x: dirToTarget.x * 0.52, y: -0.45, z: dirToTarget.z * 0.52 }); } catch {}
+        // 「エリトラで飛んだら絶対メイス＋連続コンボ」保証:
         const inPrimaryWindow = curD <= MACE_DIVE_ATTACK_RANGE;
-        const inGuaranteedWindow = state.attempts === 0 && curD <= 5.0 && heightDiff <= 0.5;
+        const inGuaranteedWindow = curD <= 5.2 && heightDiff <= 1.2;
         if ((inPrimaryWindow || inGuaranteedWindow) && state.attempts < MACE_DIVE_ATTACKS_MAX) {
-          // 攻撃直前に必ずメイスへ持ち替える（絶対メイス契約）
-          try { equipMainhandItem(bot, MACE_ID, config); } catch {}
-          let ok = false;
-          try {
-            if (typeof bot.attackEntity === "function") { ok = Boolean(bot.attackEntity(target)); }
-            else if (typeof bot.attack === "function") { ok = Boolean(bot.attack()); }
-          } catch { ok = false; }
+          const ok = executeMaceStrike(target, heightDiff);
           state.attempts++;
           if (ok) {
             state.attacks++;
-            debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 hit #${state.attacks}/${MACE_DIVE_ATTACKS_MAX} (engine melee)`, true);
-            appendPersistentDebugLog("combat", `[ElytraMace] hit #${state.attacks} d=${curD.toFixed(1)}`);
+            debugLog(bot, config, "combat", `\u00a75[ElytraMace] コンボ打撃 hit #${state.attacks}/${MACE_DIVE_ATTACKS_MAX}`, true);
+            appendPersistentDebugLog("combat", `${config.displayName}: elytra mace hit #${state.attacks}/${MACE_DIVE_ATTACKS_MAX} dist=${curD.toFixed(1)}`);
           } else {
-            debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 attempt #${state.attempts} 不成立`, false);
-            appendPersistentDebugLog("combat", `[ElytraMace] attempt #${state.attempts} 不成立 d=${curD.toFixed(1)}`);
+            debugLog(bot, config, "combat", `\u00a75[ElytraMace] 落下攻撃 attempt #${state.attempts}`, false);
           }
-          if (state.attempts >= MACE_DIVE_ATTACKS_MAX) { endElytraMaceDive(bot, config, state, "max-attack"); return; }
-          // Wind Burstで跳ね返る可能性 → 12tickだけ再降下を許可
-          state.phase = "rebound";
-          state.reboundUntil = globalTick + 12;
-          return;
-        }
-        // 地面スレスレまで来たとき: 一度も攻撃できていなければ跳ねて1パスだけやり直す
-        if (heightDiff <= -1) {
-          if (state.attempts === 0 && globalTick + 14 < state.until) {
-            state.phase = "rebound";
-            state.reboundUntil = globalTick + 4;
-            try { bot.applyImpulse({ x: 0, y: 0.5, z: 0 }); } catch {}
+          if (state.attempts >= MACE_DIVE_ATTACKS_MAX) {
+            endElytraMaceDive(bot, config, state, "combo-complete");
             return;
           }
-          endElytraMaceDive(bot, config, state, "landed-no-attack");
+          // [0.7.0] 1回だけで終わらせず、エリトラ再推進＋上方向バウンドで2撃目・3撃目の急降下メイスコンボへ繋げる！
+          state.phase = "rebound";
+          state.reboundUntil = globalTick + ELYTRA_COMBO_REBOUND_TICKS;
+          try {
+            if (isSimBot(bot)) {
+              try { bot.jump?.(); } catch {}
+              try { bot.glide?.(); } catch {}
+            }
+            bot.applyImpulse({ x: dirToTarget.x * 0.38, y: 0.68, z: dirToTarget.z * 0.38 });
+          } catch {}
+          system.runTimeout(step, 1);
+          return;
+        }
+        // 地面スレスレまで来たとき: まだコンボ回数が残っていれば再浮上して必ずメイスコンボを継続する
+        if (heightDiff <= -0.8 || isBotOnGround(bot)) {
+          if (state.attempts < MACE_DIVE_ATTACKS_MAX && globalTick + 12 < state.until) {
+            // 近くにいれば接地直前に1撃叩き込んでから再ジャンプ
+            if (curD <= 5.5) {
+              const ok = executeMaceStrike(target, heightDiff);
+              state.attempts++;
+              if (ok) state.attacks++;
+              if (state.attempts >= MACE_DIVE_ATTACKS_MAX) {
+                endElytraMaceDive(bot, config, state, "combo-complete");
+                return;
+              }
+            }
+            state.phase = "rebound";
+            state.reboundUntil = globalTick + 6;
+            try {
+              if (isSimBot(bot)) bot.jump?.();
+              bot.applyImpulse({ x: dirToTarget.x * 0.45, y: 0.62, z: dirToTarget.z * 0.45 });
+            } catch {}
+            system.runTimeout(step, 1);
+            return;
+          }
+          endElytraMaceDive(bot, config, state, "landed");
           return;
         }
       } else if (state.phase === "rebound") {
-        if (globalTick >= state.reboundUntil) { state.phase = "dive"; return; }
-        try { bot.applyImpulse({ x: 0, y: -0.3, z: 0 }); } catch {}
+        // 再上昇フェーズ: 相手の上空へ素早く跳ね上がってから再び急降下("dive")へ入る
+        faceBotToward(bot, addVector(targetLoc, { x: 0, y: 0.6, z: 0 }));
+        try { if (isSimBot(bot)) bot.moveRelative?.(0, 1, 1); } catch {}
+        if (globalTick < state.reboundUntil) {
+          try { bot.applyImpulse({ x: dirToTarget.x * 0.42, y: 0.26, z: dirToTarget.z * 0.42 }); } catch {}
+        } else {
+          state.phase = "dive";
+          try { bot.applyImpulse({ x: dirToTarget.x * 0.48, y: -0.38, z: dirToTarget.z * 0.48 }); } catch {}
+        }
       }
       system.runTimeout(step, 1);
     } catch { endElytraMaceDive(bot, config, state); }
@@ -1440,17 +1748,25 @@ export function endElytraMaceDive(bot, config, state, reason = "end") {
       rt.elytraDashState = undefined;
       // [0.5.4] 着地後に経路を再構築（穴に嵌まったまま古い経路を追い続けない）
       rt.navPath = undefined;
+      rt.navLastPathTick = -9999;
       // [0.6.0] ダイブで中断した移動を確実に再開させる（詰まり判定をリセット）
       rt.stuckTicks = 0;
       rt.stuckWindow = undefined;
+      rt.airborneTicks = 0;
     } catch {}
+    // [0.7.0] SimulatedPlayer が滑空(glide)・飛行状態のまま残って地上移動不能（フリーズ）になるバグを解消
+    try { bot?.stopGliding?.(); } catch {}
+    try { bot?.stopFlying?.(); } catch {}
+    try { bot.isSneaking = false; } catch {}
     const equippable = getEquippableComponent(bot);
     if (equippable) {
       try { equippable.setEquipment(EquipmentSlot.Chest, state.chestItem ?? new ItemStack("minecraft:netherite_chestplate", 1)); } catch {}
     }
     try { selectBestSword(bot); } catch {}
+    // 着地直後に移動入力を1回キックして確実に地上AIへ復帰させる
+    try { if (isSimBot(bot)) bot.moveRelative?.(0, 1, 0.8); } catch {}
     debugLog(bot, config, "combat", `\u00a75[ElytraMace] 終了(${reason}) attempts=${state.attempts ?? 0} hits=${state.attacks ?? 0} -> 復帰 (低位戦へ)`, true);
-    appendPersistentDebugLog("combat", `[ElytraMace] end(${reason}) attempts=${state.attempts ?? 0} hits=${state.attacks ?? 0}`);
+    appendPersistentDebugLog("combat", `${config.displayName}: elytra mace ended(${reason}) attempts=${state.attempts ?? 0} hits=${state.attacks ?? 0}`);
   } catch {}
 }
 
