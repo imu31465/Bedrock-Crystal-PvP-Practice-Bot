@@ -36,7 +36,7 @@ export const DEBUG_LOG_PROPERTY_ID = "pvpbot:debuglog";
 export const BOT_UID_TAG_PREFIX = "pvpbot.uid:";
 export const BOT_CONFIG_TAG_PREFIX = "pvpbot.cfg:";
 export const BOT_READY_TAG = "pvpbot.ready";
-export const ADDON_VERSION = "0.6.0";
+export const ADDON_VERSION = "0.7.0";
 
 export const OBSIDIAN_ID = "minecraft:obsidian";
 export const END_CRYSTAL_ID = "minecraft:end_crystal";
@@ -300,9 +300,15 @@ export const BOT_MACE_ENCHANTMENTS = [
 // [v0.5.0] エリトラ+メイス急降下（上空滞留を廃して被弾を最小化する再設計）
 export const ELYTRA_DIVE_RISE_MAX_TICKS = 10;  // 上昇フェーズの上限（被弾暴露の最小化）
 export const ELYTRA_DIVE_AIM_HEIGHT = 7;       // 相手+7ブロックを目標高度
-export const ELYTRA_DIVE_TOTAL_MAX_TICKS = 48; // [0.6.0] 最大3ストライク分の滞空を許容（旧26）
-export const MACE_DIVE_ATTACK_RANGE = 3.0;     // attackEntity で落下攻撃を叩く距離
-export const MACE_DIVE_ATTACKS_MAX = 3;        // [0.6.0] 連続ストライク上限（必ずメイスを当て切る）
+export const ELYTRA_DIVE_TOTAL_MAX_TICKS = 70; // [0.7.0] 3連コンボループ分の滞空上限（旧48）
+export const MACE_DIVE_ATTACK_RANGE = 3.8;     // attackEntity で落下攻撃を叩く距離
+export const MACE_DIVE_ATTACKS_MAX = 3;        // [0.7.0] 連続ストライク上限（必ずメイスを当て切る）
+export const ELYTRA_COMBO_REBOUND_TICKS = 8;   // [0.7.0] 1撃後の再上昇→再ダイブのインターバル
+
+// [0.7.0] Crystal PvP 上級戦術定数
+export const DTAP_COMBO_MAX_BURSTS = 3;        // ヒットクリスタル/d-tapの連続起爆回数（両手トーテムも2個割る）
+export const DTAP_FOLLOWUP_DELAY_TICKS = 10;   // i-frame明けジャスト(10tick)に追撃起爆
+export const ANCHOR_SPAM_MAX_CHAIN = 3;        // 連続アンカー+手前ブロックの最大連撃数
 
 export const BOT_ARMOR_ENCHANTMENTS = {
   [EquipmentSlot.Head]: [
@@ -481,6 +487,8 @@ export const PATCH_DIFFICULTY_PRESETS = {
     targetMobs: true, targetBots: true, autoTotem: true,
     pathfinding: true, blockPlacing: false, highGroundTactic: false,
     escapeTeleport: true, lookTurnSpeed: 18, humanize: true,
+    dtapCombo: false, anchorStepDown: false, anchorSpam: false,
+    bedCombo: false, maceCombo: false, elytraDash: false,
   },
   normal: {
     maintainDistance: 3, pearlDistance: 10, pearlCooldown: 40,
@@ -489,6 +497,8 @@ export const PATCH_DIFFICULTY_PRESETS = {
     targetMobs: true, targetBots: true, autoTotem: true,
     pathfinding: true, blockPlacing: true, highGroundTactic: true,
     escapeTeleport: true, lookTurnSpeed: 32, humanize: true,
+    dtapCombo: true, anchorStepDown: true, anchorSpam: true,
+    bedCombo: false, maceCombo: true, elytraDash: true,
   },
   hard: {
     maintainDistance: 2, pearlDistance: 8, pearlCooldown: 12,
@@ -500,9 +510,13 @@ export const PATCH_DIFFICULTY_PRESETS = {
     pathfinding: true, blockPlacing: true, highGroundTactic: true,
     surroundTactic: true, crystalSurf: true, anchorBreakCache: true,
     enableMining: true, mineStuckTicksThreshold: 10, eatWhenCornered: true,
-    escapeTeleport: true, lookTurnSpeed: 120, humanize: false,
+    escapeTeleport: true, lookTurnSpeed: 180, humanize: false,
+    swordCombo: true, crystalCombo: true, anchorCombo: true,
     crossbowCombo: true, blastMitigation: true, shieldGuard: true,
-    bowCombo: true, bowDistance: 10, elytraDash: true, elytraDistance: 12,
+    bowCombo: true, bowDistance: 10, elytraDash: true, elytraDistance: 10,
+    maceCombo: true, bedCombo: true,
+    dtapCombo: true, anchorStepDown: true, anchorSpam: true,
+    unbreakableEquipment: true,
     ignoreSelfDamage: true, tickInterval: 1,
   },
 };

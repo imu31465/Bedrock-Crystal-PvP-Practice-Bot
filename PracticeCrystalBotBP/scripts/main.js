@@ -281,9 +281,11 @@ function onEntityHurt(event) {
   const remainingHealth = patchGetCurrentHealthValue(entity);
   const maxHealth = patchGetMaxHealthValue(entity);
   const cause = event.damageSource?.cause ?? "unknown";
+  let srcId = "?";
+  try { srcId = `${event.damageSource?.damagingEntity?.typeId ?? "?"}`; } catch {}
+  // [0.7.0] 永続デバッグログ (/pvpbot:debugdump) には常に被弾イベントを残す（チャット溢れなしに原因特定可能）
+  appendPersistentDebugLog("health", `${config.displayName || uid}: hurt dmg=${damage.toFixed(1)} hp=${remainingHealth.toFixed(1)}/${maxHealth.toFixed(1)} cause=${cause} src=${srcId}`);
   if (config.debug?.health) {
-    let srcId = "?";
-    try { srcId = `${event.damageSource?.damagingEntity?.typeId ?? "?"}`; } catch {}
     debugLog(entity, config, "health", `被ダメージ=${damage.toFixed(1)} 残HP=${remainingHealth.toFixed(1)}/${maxHealth.toFixed(1)} cause=${cause} src=${srcId}`, true);
   }
   if (config.autoTotem &&

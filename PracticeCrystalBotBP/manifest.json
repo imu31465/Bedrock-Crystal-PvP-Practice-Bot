@@ -2,11 +2,11 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.6.0 (combat rework part 1): bow/crossbow arrows spawn 1.5 blocks ahead of the muzzle (no more zero-range self-hits); elytra dive guarantees at least one mace attack per launch, up to 3 consecutive strikes, mace re-equipped before every strike, and a watchdog force-ends stalled dives (bot can no longer freeze after flying); crystal detonation above the target's head is banned except when surrounded, and feet-level explosions are heavily prioritized (existing-base auto-preference removed). v0.5.6: undefined-entry hardening for SimulatedPlayer in player iteration. v0.5.5: ender_crystal entity id fix for crystal-surf. v0.5.4: hard 0-value cooldowns preserved; hole-escape ladder; blast-mitigation block spam tamed. v0.5.3: namespaced /bot alias. v0.5.2: sourceEntity caller resolution.",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.7.0 (combat rework complete): 1) Elytra post-flight freeze fixed (stopGliding/stopFlying/repath/steering kick on end); guaranteed Mace combo with horizontal homing + up to 3 consecutive rebound-dive strikes; 2) Bow/Crossbow self-hit eliminated (2.2-block muzzle offset, projectile.shoot velocity vector, own-arrow threat filter, zero-velocity & close-proximity guard); 3) Crystal/Anchor blast-block timing fixed (offensive crystal placed or anchor charged FIRST, then front shield block placed right before detonation); 4) Anchor step-down crater -> low-ground entry -> feet obsidian + crystal combo, plus continuous anchor + front-block spam chain; 5) KB-sword airborne feet obsidian -> d-tap multi-crystal rapid detonation (pops 2+ totems); 6) Fixed normal/bare-hand melee hits not registering on SimBot (removed synthetic Resistance II stacking on SimulatedPlayer); 7) /bot hard enables all combat toggles at maximum strength by default; persistent debug logging (/pvpbot:debugdump) records all hurt/combo events.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
-			6,
+			7,
 			0
 		],
 		"min_engine_version": [
@@ -23,7 +23,7 @@
 			"uuid": "6a1b9e34-5f78-4c20-bd93-072a8e61c5d4",
 			"version": [
 				0,
-				6,
+				7,
 				0
 			]
 		}
