@@ -551,9 +551,8 @@ export function handleSwordCombo(bot, target, config) {
 // 両手にトーテムを持っていても2個くらい一気に割る競技コンボ。
 const HIT_CRYSTAL = { IDLE: 0, LAUNCHED: 1, PRIMED: 2 };
 
-function getEntityVelocitySafe(entity) {
-  try { return { ...entity.velocity }; } catch { return { x: 0, y: 0, z: 0 }; }
-}
+// NOTE: getEntityVelocitySafe の実体は本ファイル下部（PR #5 の改良版: getVelocity() 対応）に
+// 一本化する。ここに旧実装を残すと識別子の二重宣言でモジュールが解析エラーになる。
 
 // Java物理で着地点を予測（重力 0.08・摩擦 ×0.91）
 function predictLandingLocation(target, maxTicks = 14) {
@@ -1464,7 +1463,7 @@ export function handleSimShieldGuard(bot, target, config) {
   if (state.active) {
     if (globalTick - state.since >= SHIELD_GUARD_MAX_HOLD_TICKS) { releaseShieldGuard(bot, config, runtime, "timeout"); return; }
     // [F-3] 盾の維持: スニーク状態を維持する（Bedrockの実操作）
-    if (globalTick - Number(state.lastRaiseTickick - Number(state.lastRaiseTick ?? state.since) >= 10) {
+    if (globalTick - Number(state.lastRaiseTick ?? state.since) >= 10) {
       state.lastRaiseTick = globalTick;
       try { bot.isSneaking = true; } catch {}
       try { bot.useItem?.(new ItemStack("minecraft:shield", 1)); } catch {}
@@ -2106,11 +2105,6 @@ export function handleAirborneTargetLandingTrap(bot, target, config) {
     debugLog(bot, config, "combat", `\u00a7d[AirTrap] 敵の上空浮上を検知(高度+${landing.heightAboveGround.toFixed(1)}) -> 着地点(${landFloor.x},${landFloor.y},${landFloor.z})へ先回りクリスタルコンボ！`, true);
     appendPersistentDebugLog("combat", `${config.displayName}: airborne landing crystal trap @${bestTrap.location.x},${bestTrap.location.y},${bestTrap.location.z} (land in ~${landing.ticksToLand}t)`);
     return handleCrystalCombo(bot, target, config, bestTrap);
-  }
-  return false;
-}
-
-rystalCombo(bot, target, config, bestTrap);
   }
   return false;
 }
