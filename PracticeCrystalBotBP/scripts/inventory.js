@@ -345,6 +345,8 @@ export function getSupplyChestState(config) {
 
 // ── Equip / Select ──
 export function selectBestSword(bot) {
+  // [0.7.1] 除去済みエンティティへの遅延呼び出しを安全に処理（非同期チェーンの残骸対策）
+  try { if (!bot || bot.isValid !== true) return { damage: 0, knockbackLevel: 0, fireAspectLevel: 0, score: 0 }; } catch { return { damage: 0, knockbackLevel: 0, fireAspectLevel: 0, score: 0 }; }
   const equippable = getEquippableComponent(bot);
   const inventory = bot.getComponent(EntityComponentTypes.Inventory)?.container;
   const runtime = getRuntime(getBotUid(bot));

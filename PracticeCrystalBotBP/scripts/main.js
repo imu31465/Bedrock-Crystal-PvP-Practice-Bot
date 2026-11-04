@@ -104,6 +104,9 @@ function tickBots() {
     // rubber-band every tick when fighting near the boundary edge.
     const gs = normalizeGlobalSettings(globalSettings || {});
 
+    // [0.7.1] 前段の処理中に無効化されたBotを再検証（tickBots の 'location' 例外防止）
+    try { void bot.location; } catch { untrackBot(bot); continue; }
+
     // Skip if configuring (and make invincible)
     if (runtime.isConfiguring) {
       try { bot.addEffect("resistance", 10, { amplifier: 255, showParticles: false }); } catch {}

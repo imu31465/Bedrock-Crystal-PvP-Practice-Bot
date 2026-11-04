@@ -466,7 +466,7 @@ export function handleBedCombo(bot, target, config, selectedCandidate) {
     } finally {
       runtime.pendingBed = undefined;
     }
-  })();
+  })().catch(() => {});
   return true;
 }
 
@@ -778,7 +778,7 @@ export function handleAnchorCombo(bot, target, config, selectedCandidate) {
         } catch {}
       }, 2);
     }
-  })();
+  })().catch(() => {});
   return true;
 }
 
@@ -830,6 +830,8 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
       runtime.pendingCrystal = undefined;
       if (!pending) { debugLog(bot, config, "combat", "§c[Crystal] pendingCrystal消失、中断", true); return; }
       void (async () => {
+        // [0.7.1] 除去済みBotでの遅延実行を安全に中断（Unhandled rejection 防止）
+        try { if (!bot?.isValid) return; } catch { return; }
         const liveTarget = resolveTarget(pending);
         if (!liveTarget) { debugLog(bot, config, "combat", `§c[Crystal] ターゲット解決失敗 id=${pending.targetId} entityValid=${!!pending.targetEntity}`, true); return; }
         const crystalLocation = getExplosionLocation(pending.base, "crystal");
@@ -936,11 +938,11 @@ export function handleCrystalCombo(bot, target, config, selectedCandidate) {
               }
             };
             await tryDetonate();
-          })();
+          })().catch(() => {});
         }, detonateDelay);
-      })();
+      })().catch(() => {});
     }, 1);
-  })();
+  })().catch(() => {});
   return true;
 }
 
