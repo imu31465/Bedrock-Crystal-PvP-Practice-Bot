@@ -88,7 +88,9 @@ function tickBots() {
     const runtime = getRuntime(uid);
 
     try {
-      if (globalTick % 30 === (Number(bot.id ?? 0) % 30)) {
+      // [0.9.3] bot.id は負の巨大数で、% の結果が負になると条件が永遠に成立せず
+      // プローブが一度も出ない個体があったため abs を取る。
+      if (globalTick % 30 === (Math.abs(Number(bot.id ?? 0)) % 30)) {
         const probeInside = isLocationInsideBotBoundary(bot.location);
         appendPersistentDebugLog("probe", `${config.displayName}: sim=${isSimBot(bot)} en=${config.enabled} cfg=${runtime.isConfiguring} prot=${isSpawnProtected(uid)} inside=${probeInside} tInterval=${config.tickInterval} loc=${Number(bot.location?.x ?? 0).toFixed(1)},${Number(bot.location?.y ?? 0).toFixed(1)},${Number(bot.location?.z ?? 0).toFixed(1)}`);
       }
@@ -157,10 +159,22 @@ function tickBots() {
     if (!target) {
       ensureBotEquipmentIntegrity(bot, config);
       patchSyncVisualEquipmentSlots(bot);
+      // [0.9.3] ターゲット不在が30秒続いたら1回だけ記録（「止まった」調査用）
+      if (runtime.noTargetSinceTick === undefined) {
+        runtime.noTargetSinceTick = globalTick;
+        runtime.noTargetNoticeLogged = false;
+      } else if (!runtime.noTargetNoticeLogged && globalTick - runtime.noTargetSinceTick >= 600) {
+        runtime.noTargetNoticeLogged = true;
+        try {
+          appendPersistentDebugLog("movement", `${config.displayName ?? config.uid}: no target for 30s @${Number(bot.location?.x ?? 0).toFixed(0)},${Number(bot.location?.y ?? 0).toFixed(0)},${Number(bot.location?.z ?? 0).toFixed(0)}`);
+        } catch {}
+      }
       // [0.9.2] 完全な静止だと「固まった」と区別できないため、軽い待機動作を入れる
       handleIdleBehavior(bot, runtime);
       continue;
     }
+    runtime.noTargetSinceTick = undefined;
+    runtime.noTargetNoticeLogged = false;
 
     // Track health
     runtime.lastKnownHealth = patchGetCurrentHealthValue(bot);
