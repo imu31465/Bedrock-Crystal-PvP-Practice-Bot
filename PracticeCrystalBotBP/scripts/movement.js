@@ -914,6 +914,7 @@ function moveTryEscapeTeleport(bot, config, target) {
             runtime.lastEscapeTeleportTick = globalTick;
             runtime.stuckTicks = 0;
             runtime.navPath = undefined;
+            debugLog(bot, config, "movement", `§e[脱出] TP脱出(近傍) → ${x + 0.5}, ${y}, ${z + 0.5}`, true);
             return true;
           } catch { return false; }
         }
@@ -930,6 +931,7 @@ function moveTryEscapeTeleport(bot, config, target) {
     runtime.lastEscapeTeleportTick = globalTick;
     runtime.stuckTicks = 0;
     runtime.navPath = undefined;
+    debugLog(bot, config, "movement", `§e[脱出] TP脱出(オーナー付近) → ${Number(rescue.x ?? 0).toFixed(1)}, ${Number(rescue.y ?? 0).toFixed(1)}, ${Number(rescue.z ?? 0).toFixed(1)}`, true);
     return true;
   } catch { return false; }
 }

@@ -520,6 +520,10 @@ export const PATCH_DIFFICULTY_PRESETS = {
     pearlFollow: true, airLandingCrystal: true,
     unbreakableEquipment: true,
     ignoreSelfDamage: true, tickInterval: 1,
+    // [0.9.1] hard はデバッグログを最初からON にしておく（固まり等の内部挙動を
+    // ユーザー操作なしで追跡できるようにする）。scan/totem/loadout/inventory は
+    // ノイズ過多のためOFF。出力を抑えたい場合は設定メニューから個別にOFF可能。
+    debug: { enabled: true, movement: true, scan: false, combat: true, health: true, totem: false, loadout: false, inventory: false },
   },
 };
 

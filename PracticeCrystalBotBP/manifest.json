@@ -2,7 +2,7 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.10.0: 1) Improved A* pathfinding (reuses existing open paths/stairs first, straight 4-cardinal climbing & straight staircase mining instead of diagonal corner-clipping); 2) Active Shield equipping & guarding (equips shield in mainhand + sneaks against projectiles, enemy bow/crossbow aim, and aerial mace/melee dives); 3) Hard preset defaults all cooldowns to 0 (minimum) with surroundTactic OFF; 4) Elytra-Mace aerial pursuit when enemy is high up with Slow Falling.",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.10.0: 1) Improved A* pathfinding (reuses existing open paths/stairs first, straight 4-cardinal climbing & straight staircase mining instead of diagonal corner-clipping); 2) Active Shield equipping & guarding (equips shield in mainhand + sneaks against projectiles, enemy bow/crossbow aim, and aerial mace/melee dives); 3) Hard preset defaults all cooldowns to 0 (minimum) with surroundTactic OFF; 4) Elytra-Mace aerial pursuit when enemy is high up with Slow Falling. Includes the 0.9.x stability line: per-bot exception isolation + instant stale-target invalidation (no freeze when a bot is removed mid-fight), hard-preset debug logging ON, and persistent-log mirroring to the content log for the viewer.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,

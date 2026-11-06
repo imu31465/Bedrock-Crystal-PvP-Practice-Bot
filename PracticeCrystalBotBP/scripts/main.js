@@ -89,11 +89,17 @@ function tickBots() {
     const runtime = getRuntime(uid);
 
     try {
-      if (globalTick % 30 === (Number(bot.id ?? 0) % 30)) {
+      // [0.9.3] bot.id は負の巨大数で、% の結果が負になると条件が永遠に成立せず
+      // プローブが一度も出ない個体があったため abs を取る。
+      if (globalTick % 30 === (Math.abs(Number(bot.id ?? 0)) % 30)) {
         const probeInside = isLocationInsideBotBoundary(bot.location);
         appendPersistentDebugLog("probe", `${config.displayName}: sim=${isSimBot(bot)} en=${config.enabled} cfg=${runtime.isConfiguring} prot=${isSpawnProtected(uid)} inside=${probeInside} tInterval=${config.tickInterval} loc=${Number(bot.location?.x ?? 0).toFixed(1)},${Number(bot.location?.y ?? 0).toFixed(1)},${Number(bot.location?.z ?? 0).toFixed(1)}`);
       }
     } catch {}
+
+    // [0.9.2] Bot単位の例外隔離: 1体のエラーでtickBots全体（他Bot・残り処理）が
+    // 止まらないよう、以降の処理をこのtryで包む。エラー処理はhandleBotTickError。
+    try {
 
     // Skip if tickInterval says so
     if (config.tickInterval > 1 && globalTick % config.tickInterval !== 0) continue;
@@ -143,16 +149,37 @@ function tickBots() {
     // don't have a cached target yet, force a lookup so the bot recognizes
     // enemies immediately after spawn instead of waiting up to 3 ticks.
     if (runtime.staggerOffset === undefined) runtime.staggerOffset = Math.floor(Math.random() * 3);
-    if (runtime.cachedTarget === undefined || globalTick % 3 === runtime.staggerOffset) {
+    // [0.9.2] キャッシュが無い/無効(除去済み)なら即座に再取得する。旧実装は3tick毎の
+    // 定期更新だけだったため、相手Botを削除した直後の1〜2tickで無効エンティティへ
+    // アクセスしてtickBotsが停止 →「フリーズ」の原因になっていた。
+    if (!isEntityUsable(runtime.cachedTarget) || globalTick % 3 === runtime.staggerOffset) {
       runtime.cachedTarget = findNearestTarget(bot);
     }
     const target = runtime.cachedTarget;
+    if (target) {
+      runtime.noTargetSinceTick = undefined;
+      runtime.noTargetNoticeLogged = false;
+    }
 
     if (!target) {
       ensureBotEquipmentIntegrity(bot, config);
       patchSyncVisualEquipmentSlots(bot);
+      // [0.9.3] ターゲット不在が30秒続いたら1回だけ記録（「止まった」調査用）
+      if (runtime.noTargetSinceTick === undefined) {
+        runtime.noTargetSinceTick = globalTick;
+        runtime.noTargetNoticeLogged = false;
+      } else if (!runtime.noTargetNoticeLogged && globalTick - runtime.noTargetSinceTick >= 600) {
+        runtime.noTargetNoticeLogged = true;
+        try {
+          appendPersistentDebugLog("movement", `${config.displayName ?? config.uid}: no target for 30s @${Number(bot.location?.x ?? 0).toFixed(0)},${Number(bot.location?.y ?? 0).toFixed(0)},${Number(bot.location?.z ?? 0).toFixed(0)}`);
+        } catch {}
+      }
+      // [0.9.2] 完全な静止だと「固まった」と区別できないため、軽い待機動作を入れる
+      handleIdleBehavior(bot, runtime);
       continue;
     }
+    runtime.noTargetSinceTick = undefined;
+    runtime.noTargetNoticeLogged = false;
 
     // Track health
     runtime.lastKnownHealth = patchGetCurrentHealthValue(bot);
@@ -197,10 +224,12 @@ function tickBots() {
     // (a) 相手が低速落下(Slow Falling)で上の方に浮いている時、または
     // (b) 距離が十分に開いており(14ブロック以上)、地下・閉所ではなく相手も爆発物を使っていない時に、
     // エリトラ＋メイス急降下で追撃する。
-    const distToTarget = distance(bot.location, target.location);
-    const slowFallAerial = isTargetSlowFallingHighUp(bot, target);
+    // [0.9.2] 同tick中に目標が除去されている可能性を考慮した安全距離
+    const distToTarget = isEntityUsable(target) ? distance(bot.location, target.location) : Infinity;
+    const slowFallAerial = isEntityUsable(target) ? isTargetSlowFallingHighUp(bot, target) : false;
     if (!getRuntime(config.uid).elytraDashState?.active &&
         !getRuntime(config.uid).shieldGuardState?.active &&
+        isEntityUsable(target) &&
         (slowFallAerial || distToTarget >= Math.max(14, Number(config.elytraDistance ?? 14)))) {
       handleElytraMaceDive(bot, target, config);
     }
@@ -258,10 +287,87 @@ function tickBots() {
 
     // Visual sync
     patchSyncVisualEquipmentSlots(bot);
+    } catch (error) {
+      // [0.9.2] Bot単位の例外隔離（1体のエラーで他Bot・同tick全体を巻き込まない）
+      handleBotTickError(bot, config, runtime, error);
+    }
   }
 
   // Flush debug log at end of tick
   flushDebugLogIfDirty();
+}
+
+// [0.9.2] ノーターゲット時の待機動作: 周囲の見回し＋まれにその場ジャンプ。
+// 「生きている（固まっていない）」を目視できるようにするのが目的（戦闘・移動には干渉しない）。
+function handleIdleBehavior(bot, runtime) {
+  try {
+    if (globalTick >= Number(runtime.nextIdleLookTick ?? 0)) {
+      runtime.nextIdleLookTick = globalTick + 60 + Math.floor(Math.random() * 80);
+      const yaw = Math.floor(Math.random() * 360) - 180;
+      const pitch = Math.floor(Math.random() * 12);
+      try { bot.setRotation({ x: pitch, y: yaw }); } catch {}
+    }
+    if (globalTick >= Number(runtime.nextIdleJumpTick ?? 0)) {
+      runtime.nextIdleJumpTick = globalTick + 120 + Math.floor(Math.random() * 160);
+      if (Math.random() < 0.25) {
+        try { bot.jump?.(); } catch {}
+      }
+    }
+  } catch {}
+}
+
+// [0.9.2] Bot単位の例外ハンドラ。
+// ・同一Botで連続して失敗している間は記録を間引く（毎tickスパム防止）
+// ・一定回数連続で失敗したら一時状態（ターゲット/各pending/エリトラ等）を
+//   リセットして通常動作への復帰を試みる
+function handleBotTickError(bot, config, runtime, error) {
+  try {
+    const consecutive = globalTick - Number(runtime.lastErrorTick ?? -9999) <= 2;
+    runtime.errorStreak = consecutive ? Number(runtime.errorStreak ?? 0) + 1 : 1;
+    runtime.lastErrorTick = globalTick;
+    const streak = runtime.errorStreak;
+    const label = config?.displayName ?? config?.uid ?? "?";
+    if (streak <= 3 || streak % 50 === 0) {
+      logSystem(`tickBots error[${label}] x${streak}: ${formatError(error)}`);
+    }
+    if (streak >= 8) {
+      runtime.cachedTarget = undefined;
+      runtime.pendingCrystal = undefined;
+      runtime.pendingAnchor = undefined;
+      runtime.pendingBed = undefined;
+      runtime.pendingRangedDraw = false;
+      runtime.pendingPearlToken = "";
+      try { if (runtime.shieldGuardState) runtime.shieldGuardState.active = false; } catch {}
+      try { abortElytraMaceDive(bot, config); } catch {}
+      if (streak === 8) {
+        logSystem(`tickBots: [${label}] 連続エラーのため内部状態をリセットして復帰を試みます`);
+      }
+    }
+  } catch {}
+}
+
+// [0.9.2] 除去/死亡したBotエンティティの安全判定（プロパティ参照は必ずtry内で行う）
+function isBotEntitySafe(entity) {
+  try { if (isSimBot(entity)) return true; } catch {}
+  try { return entity.typeId === BOT_TYPE; } catch {}
+  return false;
+}
+
+// [0.9.2] 消えたエンティティを掴んでいる可能性がある全Botのキャッシュをクリアする。
+// （相手Botを途中で消した際、残ったBotが削除済みエンティティを参照し続けるのを防ぐ）
+function invalidateBotCachesReferencing(entity) {
+  let id;
+  try { id = entity?.id; } catch {}
+  if (!id) return;
+  for (const runtime of runtimeState.values()) {
+    try { if (runtime?.cachedTarget && runtime.cachedTarget.id === id) runtime.cachedTarget = undefined; } catch {}
+    try {
+      for (const key of ["pendingCrystal", "pendingAnchor", "pendingBed"]) {
+        const pending = runtime?.[key];
+        try { if (pending?.targetEntity && pending.targetEntity.id === id) pending.targetEntity = undefined; } catch {}
+      }
+    } catch {}
+  }
 }
 
 // ── Event Handlers ──
@@ -290,18 +396,23 @@ function onEntitySpawn(event) {
 }
 
 function onEntityDie(event) {
-  const entity = event.deadEntity;
-  if (entity?.typeId !== BOT_TYPE && !isSimBot(entity)) return;
-  const uid = getBotUid(entity);
-  if (uid) {
-    broadcastDeathMessage(entity);
-    delete botConfigs[uid];
-    runtimeState.delete(uid);
-    trackedBotIdByUid.delete(uid);
-    try { trackedBotMetaById.delete(entity.id); } catch {}
-    appendPersistentDebugLog("death", `bot ${uid} died`);
+  try {
+    const entity = event?.deadEntity;
+    if (!entity || !isBotEntitySafe(entity)) return;
+    const uid = getBotUid(entity);
+    if (uid) {
+      broadcastDeathMessage(entity);
+      delete botConfigs[uid];
+      runtimeState.delete(uid);
+      trackedBotIdByUid.delete(uid);
+      try { trackedBotMetaById.delete(entity.id); } catch {}
+      appendPersistentDebugLog("death", `bot ${uid} died`);
+    }
+    untrackBot(entity);
+    invalidateBotCachesReferencing(entity);
+  } catch (error) {
+    logSystem(`onEntityDie error: ${formatError(error)}`);
   }
-  untrackBot(entity);
 }
 
 function onEntityHurt(event) {
@@ -344,9 +455,15 @@ function onEntityHurt(event) {
 }
 
 function onEntityRemove(event) {
-  const entity = event.removedEntity;
-  if (entity?.typeId !== BOT_TYPE && !isSimBot(entity)) return;
-  untrackBot(entity);
+  try {
+    const entity = event?.removedEntity;
+    if (!entity || !isBotEntitySafe(entity)) return;
+    untrackBot(entity);
+    // [0.9.2] 消えたBotを参照している他Botのキャッシュを即クリア（残存ボットのフリーズ防止）
+    invalidateBotCachesReferencing(entity);
+  } catch (error) {
+    logSystem(`onEntityRemove error: ${formatError(error)}`);
+  }
 }
 
 function onPlayerSpawn(event) {
