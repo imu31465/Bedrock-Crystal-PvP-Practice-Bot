@@ -551,8 +551,9 @@ export function handleSwordCombo(bot, target, config) {
 // 両手にトーテムを持っていても2個くらい一気に割る競技コンボ。
 const HIT_CRYSTAL = { IDLE: 0, LAUNCHED: 1, PRIMED: 2 };
 
-// NOTE: getEntityVelocitySafe の実体は本ファイル下部（PR #5 の改良版: getVelocity() 対応）に
-// 一本化する。ここに旧実装を残すと識別子の二重宣言でモジュールが解析エラーになる。
+function getEntityVelocitySafe(entity) {
+  try { return { ...entity.velocity }; } catch { return { x: 0, y: 0, z: 0 }; }
+}
 
 // Java物理で着地点を予測（重力 0.08・摩擦 ×0.91）
 function predictLandingLocation(target, maxTicks = 14) {
@@ -1291,7 +1292,7 @@ export function handleSimCrossbowAttack(bot, target, config) {
 }
 
 // ── Crossbow & Slow Falling constants ──
-const CROSSBOW_COOLDOWN_TICKS = 30;
+const CROSSBOW_COOLDOWN_TICKS = 14;
 const SLOW_FALLING_ARROW_DURATION_TICKS = 200; // 低速落下の矢の効果時間 (10秒 = 200tick)
 
 export function targetHasSlowFalling(target) {
@@ -1372,7 +1373,7 @@ export function targetIsShielded(target) {
 }
 
 // ── Axe Shield Break (相手が盾を構えていたら持っている斧で殴って盾を無効化する — エリトラメイス中でも即発動) ──
-const AXE_BREAK_COOLDOWN_TICKS = 16; // 素早く斧へ持ち替えて盾を割る
+const AXE_BREAK_COOLDOWN_TICKS = 8; // 素早く斧へ持ち替えて盾を割る
 const SHIELD_DISABLE_DURATION_TICKS = 100; // バニラ準拠 5秒
 
 export function handleAxeShieldBreak(bot, target, config) {
@@ -1437,8 +1438,31 @@ export function handleAxeShieldBreak(bot, target, config) {
 // [JE only]）。敵クリスタルへの盾構えは実プレイヤーに不可能な防御＝パリティ違反のため
 // 発動条件を「飛来する投射物（矢・トライデント等）」のみに絞った。
 // 敵クリスタルへの対処は handleSimThreatDefense（遮蔽ブロック＋距離管理）が担う。
-const SHIELD_GUARD_MAX_HOLD_TICKS = 40;
-const SHIELD_GUARD_RE_RAISE_COOLDOWN_TICKS = 20;
+const SHIELD_GUARD_MAX_HOLD_TICKS = 26;
+const SHIELD_GUARD_RE_RAISE_COOLDOWN_TICKS = 8;
+
+function isTargetAimingRangedOrMeleeThreat(bot, target) {
+  if (!target?.isValid) return undefined;
+  try {
+    const d = distance(bot.location, target.location);
+    const eq = target.getComponent?.("minecraft:equippable");
+    const mainId = eq?.getEquipment?.(EquipmentSlot.Mainhand)?.typeId ?? "";
+    const offId = eq?.getEquipment?.(EquipmentSlot.Offhand)?.typeId ?? "";
+    // 1) 相手が弓・クロスボウ・トライデントを構えている時は盾を装備してガード！
+    if (d <= 28 && (
+      mainId === "minecraft:bow" || mainId === "minecraft:crossbow" || mainId === "minecraft:trident" ||
+      offId === "minecraft:bow" || offId === "minecraft:crossbow"
+    )) {
+      return { reason: "enemy-ranged", location: target.location, holdTicks: 18 };
+    }
+    // 2) 相手がメイスや剣を持って至近距離で飛びかかってきている時（特に相手が上から落下中）は盾でガード！
+    const v = getEntityVelocitySafe(target);
+    if (d <= 4.8 && (mainId === MACE_ID || (target.location.y - bot.location.y >= 1.2 && v.y < -0.12))) {
+      return { reason: "enemy-aerial-melee", location: target.location, holdTicks: 12 };
+    }
+  } catch {}
+  return undefined;
+}
 
 function releaseShieldGuard(bot, config, runtime, reason) {
   const state = runtime.shieldGuardState;
@@ -1455,40 +1479,56 @@ export function handleSimShieldGuard(bot, target, config) {
   if (!config.shieldGuard) return;
   if (isSpawnProtected(config.uid)) return;
   const runtime = getRuntime(config.uid);
-  if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingBed) {
+  if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingBed || runtime.elytraDashState?.active) {
     releaseShieldGuard(bot, config, runtime, "own combo");
     return;
   }
-  const state = runtime.shieldGuardState ?? (runtime.shieldGuardState = { active: false, since: 0, lastRaiseTick: 0 });
+  const state = runtime.shieldGuardState ?? (runtime.shieldGuardState = { active: false, since: 0, lastRaiseTick: 0, maxHold: SHIELD_GUARD_MAX_HOLD_TICKS });
+  const projectile = findInboundProjectile(bot);
+  const directThreat = (!projectile && target?.isValid) ? isTargetAimingRangedOrMeleeThreat(bot, target) : undefined;
+
   if (state.active) {
-    if (globalTick - state.since >= SHIELD_GUARD_MAX_HOLD_TICKS) { releaseShieldGuard(bot, config, runtime, "timeout"); return; }
-    // [F-3] 盾の維持: スニーク状態を維持する（Bedrockの実操作）
-    if (globalTick - Number(state.lastRaiseTick ?? state.since) >= 10) {
+    const maxHold = Number(state.maxHold ?? SHIELD_GUARD_MAX_HOLD_TICKS);
+    // 脅威が去った、または最大保持時間に達したら素早く盾を下ろして反撃に移る
+    if (globalTick - state.since >= maxHold || (!projectile && !directThreat && globalTick - state.since >= 10)) {
+      releaseShieldGuard(bot, config, runtime, "clear");
+      return;
+    }
+    // [0.10.0] 盾ガード中は毎tick確実に盾をメインハンドに維持し、脅威の方向を向いてスニーク（盾構え）を維持する
+    equipMainhandItem(bot, "minecraft:shield", config);
+    const threatLoc = projectile?.location ?? directThreat?.location ?? target?.location;
+    if (threatLoc) faceBotToward(bot, threatLoc, 180);
+    try { bot.isSneaking = true; } catch {}
+    if (globalTick - Number(state.lastRaiseTick ?? state.since) >= 6) {
       state.lastRaiseTick = globalTick;
-      try { bot.isSneaking = true; } catch {}
       try { bot.useItem?.(new ItemStack("minecraft:shield", 1)); } catch {}
     }
     return;
   }
-  if (globalTick - Number(runtime.shieldGuardLowerTick ?? -9999) < SHIELD_GUARD_RE_RAISE_COOLDOWN_TICKS) return;
+  const reRaiseCd = config.difficultyPreset === "hard" ? 4 : SHIELD_GUARD_RE_RAISE_COOLDOWN_TICKS;
+  if (globalTick - Number(runtime.shieldGuardLowerTick ?? -9999) < reRaiseCd) return;
   if (runtime.pendingRangedDraw) return;
-  // [F-3] トリガーは投射物のみ（爆発は防げないため除外）
-  const projectile = findInboundProjectile(bot);
-  if (!projectile || distance(bot.location, projectile.location) > 9) return;
+
+  // [0.10.0] 1) 飛来する投射物(14ブロック以内) または 2) 相手が弓/クロスボウ/空中メイスを構えている時に盾を装備してガード！
+  const hasProjectileThreat = Boolean(projectile && distance(bot.location, projectile.location) <= 14);
+  if (!hasProjectileThreat && !directThreat) return;
   if (!equipMainhandItem(bot, "minecraft:shield", config)) return;
-  faceBotToward(bot, projectile.location);
-  // [F-3] Bedrockの実操作は「スニーク」で盾を構える。useItem はフォールバック。
+  const threatLocation = hasProjectileThreat ? projectile.location : directThreat.location;
+  faceBotToward(bot, threatLocation, 180);
   let raised = false;
   try { bot.isSneaking = true; raised = true; } catch {}
-  if (!raised) { try { bot.useItem?.(new ItemStack("minecraft:shield", 1)); raised = true; } catch {} }
+  try { bot.useItem?.(new ItemStack("minecraft:shield", 1)); raised = true; } catch {}
   state.active = true;
   state.since = globalTick;
   state.lastRaiseTick = globalTick;
-  debugLog(bot, config, "guard", `\u00a7e[Shield] raise vs projectile sneak=${raised} dist=${distance(bot.location, projectile.location).toFixed(1)}`, true);
+  state.maxHold = hasProjectileThreat ? SHIELD_GUARD_MAX_HOLD_TICKS : (directThreat?.holdTicks ?? 16);
+  const reasonLabel = hasProjectileThreat ? "projectile" : (directThreat?.reason ?? "threat");
+  debugLog(bot, config, "guard", `\u00a7e[Shield] 盾ガード発動(${reasonLabel}) sneak=${raised}`, true);
+  appendPersistentDebugLog("combat", `${config.displayName}: shield guard raised (${reasonLabel})`);
 }
 
 // ── Bow Attack (遠距離からの低速落下の矢による射撃攻撃) ──
-const BOW_COOLDOWN_TICKS = 40;
+const BOW_COOLDOWN_TICKS = 16;
 const BOW_MAX_RANGE = 48;
 const BOW_ARROW_TRACK_MAX_TICKS = 60;
 const pendingBowArrows = new Map();
@@ -1682,9 +1722,27 @@ function trackBowArrow(bot, arrow, target, config, initialVel, slowfall = true) 
 //   - 相手が爆発物（クリスタル・アンカー・黒曜石・グロウストーン）を手に持っている／直近で使っている、または周囲8ブロック以内にクリスタルやアンカーが存在する場合は一切飛ばない（上空はクリスタル爆風の被弾が最大になるため）。
 //   - 地下・洞窟・天井がある場所（自分の頭上10ブロック、相手の頭上8ブロック、および中間地点の頭上8ブロックに天井・障害物がある場所）では絶対にエリトラを使わない。
 //   - 飛行中も相手が爆発物を構えるかクリスタル・アンカーを置いた瞬間に即座にエリトラを解除して地上戦（低位）へ戻る。
-const ELYTRA_DASH_COOLDOWN_TICKS = 160; // 8秒
+const ELYTRA_DASH_COOLDOWN_TICKS = 120;
+const ELYTRA_DASH_HARD_COOLDOWN_TICKS = 35; // Hard時・低速落下追撃時は最短クールタイムで追撃可能
 const ELYTRA_SKY_CHECK_BLOCKS = 10;
 const ELYTRA_MIN_HORIZONTAL_DISTANCE = 14;
+
+// [0.10.0] 相手が低速落下(Slow Falling)状態で上空に浮いているか判定
+// 低速落下でゆっくり落ちている相手が上の方にいるなら、地上待機するよりエリトラメイスで飛び上がって空中撃墜するのが圧倒的に強い！
+export function isTargetSlowFallingHighUp(bot, target) {
+  try {
+    if (!target?.isValid || !targetHasSlowFalling(target)) return false;
+    const verticalAboveBot = target.location.y - bot.location.y;
+    if (verticalAboveBot >= 2.8) return true;
+    // 地面からの高さでも判定（相手が吹き飛ばされて空中で低速落下している場合）
+    let groundY = Math.floor(target.location.y);
+    for (let y = Math.floor(target.location.y); y >= Math.floor(target.location.y) - 20; y--) {
+      const b = getBlock(target.dimension, { x: Math.floor(target.location.x), y, z: Math.floor(target.location.z) });
+      if (b && !isAirBlock(b)) { groundY = y + 1; break; }
+    }
+    return (target.location.y - groundY) >= 3.2 && verticalAboveBot >= 1.5;
+  } catch { return false; }
+}
 
 function isTargetUsingOrNearExplosives(bot, target) {
   try {
@@ -1754,18 +1812,28 @@ export function handleElytraMaceDive(bot, target, config) {
   if (runtime.pendingCrystal || runtime.pendingAnchor || runtime.pendingRangedDraw) return false;
   if (runtime.shieldGuardState?.active) return false;
   if (runtime.elytraDashState?.active) return false;
-  if (globalTick - Number(runtime.lastElytraDashTick ?? -9999) < ELYTRA_DASH_COOLDOWN_TICKS) return false;
+  const slowFallAerialTarget = isTargetSlowFallingHighUp(bot, target);
+  const effectiveDiveCd = (slowFallAerialTarget || config.difficultyPreset === "hard" || Number(config.crystalCooldown ?? 15) === 0)
+    ? ELYTRA_DASH_HARD_COOLDOWN_TICKS
+    : ELYTRA_DASH_COOLDOWN_TICKS;
+  if (globalTick - Number(runtime.lastElytraDashTick ?? -9999) < effectiveDiveCd) return false;
   const d = distance(bot.location, target.location);
   const horizD = Math.hypot(target.location.x - bot.location.x, target.location.z - bot.location.z);
   const minRequiredDist = Math.max(ELYTRA_MIN_HORIZONTAL_DISTANCE, Number(config.elytraDistance ?? 14));
-  // [0.9.0] 距離が十分開いていない時（水平14ブロック未満）はわざわざエリトラを使わない
-  if (d < minRequiredDist || horizD < ELYTRA_MIN_HORIZONTAL_DISTANCE) return false;
-  // [0.9.0] 自分が爆発攻撃できる距離や直近で爆発コンボ中なら地上クリスタル戦を優先し、絶対に上へ飛ばない
-  if (globalTick - Number(runtime.lastCrystalTick ?? -9999) < 30 ||
-      globalTick - Number(runtime.lastAnchorTick ?? -9999) < 30) return false;
+  // [0.10.0] 相手が低速落下(Slow Falling)で上の方に浮いている時は、距離が近くても即座にエリトラメイスで空中追撃する！
+  // それ以外の通常時は、水平14ブロック以上離れている時のみエリトラを使う。
+  if (!slowFallAerialTarget) {
+    if (d < minRequiredDist || horizD < ELYTRA_MIN_HORIZONTAL_DISTANCE) return false;
+    // 自分が爆発攻撃できる距離や直近で爆発コンボ中なら地上クリスタル戦を優先し、上へ飛ばない
+    if (globalTick - Number(runtime.lastCrystalTick ?? -9999) < 30 ||
+        globalTick - Number(runtime.lastAnchorTick ?? -9999) < 30) return false;
+    // 相手がクリスタル/アンカー戦をしている時（または周囲に爆発物がある時）は飛ばない
+    if (isTargetUsingOrNearExplosives(bot, target)) return false;
+  } else {
+    // 低速落下で上空にいる相手への追撃時は、真上〜中距離(3D距離 3.0〜32)で発動可能
+    if (d < 3.0 || d > 32) return false;
+  }
   if (!patchHasCombatLineOfSight(bot, target)) return false;
-  // [0.9.0] 相手がクリスタル/アンカー戦をしている時（または周囲に爆発物がある時）は上空に行くと圧倒的に不利なので飛ばない
-  if (isTargetUsingOrNearExplosives(bot, target)) return false;
   // [0.9.0] 地下・天井がある空間では飛ばない
   if (!hasOpenSkyForElytra(bot, target)) return false;
   // 自傷リスク: HPが低い状態での浮上はしない (落下攻撃前に撃ち落とされる)
@@ -1833,8 +1901,8 @@ export function handleElytraMaceDive(bot, target, config) {
       const curD = distance(bot.location, targetLoc);
       const dirToTarget = normalize2D(vectorTo(bot.location, targetLoc));
 
-      // [0.9.0] エリトラ飛行中に相手がクリスタル/アンカー戦を始めたら、上空は圧倒的に不利なので即座にエリトラを解除して地上戦（低位）へ戻る！
-      if (isTargetUsingOrNearExplosives(bot, target)) {
+      // [0.9.0/0.10.0] エリトラ飛行中に相手が地上でクリスタル/アンカー戦を始めたら即解除（ただし相手が低速落下で上空に浮いている追撃中は続行）
+      if (!isTargetSlowFallingHighUp(bot, target) && isTargetUsingOrNearExplosives(bot, target)) {
         endElytraMaceDive(bot, config, state, "abort-explosive-threat");
         return;
       }
@@ -2105,6 +2173,11 @@ export function handleAirborneTargetLandingTrap(bot, target, config) {
     debugLog(bot, config, "combat", `\u00a7d[AirTrap] 敵の上空浮上を検知(高度+${landing.heightAboveGround.toFixed(1)}) -> 着地点(${landFloor.x},${landFloor.y},${landFloor.z})へ先回りクリスタルコンボ！`, true);
     appendPersistentDebugLog("combat", `${config.displayName}: airborne landing crystal trap @${bestTrap.location.x},${bestTrap.location.y},${bestTrap.location.z} (land in ~${landing.ticksToLand}t)`);
     return handleCrystalCombo(bot, target, config, bestTrap);
+  }
+  return false;
+}
+
+rystalCombo(bot, target, config, bestTrap);
   }
   return false;
 }

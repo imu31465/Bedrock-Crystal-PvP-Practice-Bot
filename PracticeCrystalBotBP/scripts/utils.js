@@ -228,13 +228,12 @@ export function isLocationInsideBotBoundary(location) {
 export function findClosestPlayer(location, dimension, maxDist = 16, _insideBoundaryOnly = false) {
   let closest, best = maxDist;
   for (const p of getPlayersInDimension(dimension)) {
-    // [0.9.2] 距離計算もtry内に含める（消失エンティティ混入時の例外で探索全体が止まるのを防ぐ）
     try {
       const gm = p.getGameMode?.();
       if (gm && gm !== GameMode.Survival && gm !== GameMode.Adventure) continue;
-      const d = distance(location, p.location);
-      if (d < best) { closest = p; best = d; }
     } catch {}
+    const d = distance(location, p.location);
+    if (d < best) { closest = p; best = d; }
   }
   return closest;
 }
@@ -253,10 +252,7 @@ export function findNearestTarget(bot) {
       // 1. Check other tracked bots directly (no API call needed)
       if (config.targetBots) {
         for (const otherBot of trackedBots.values()) {
-          // [0.9.2] 生存確認を最初に行う（除去済みエンティティの .id/.dimension 参照で
-          // 例外 → Bot探索全体がスキップされるのを防ぐ）
-          if (!isEntityUsable(otherBot)) continue;
-          if (otherBot.id === bot.id || otherBot.dimension.id !== dimId) continue;
+          if (otherBot.id === bot.id || otherBot.dimension.id !== dimId || !isEntityUsable(otherBot)) continue;
           if (!isLocationInsideBotBoundary(otherBot.location)) continue;
           const currentHealth = patchGetCurrentHealthValue(otherBot);
           if (currentHealth <= 0) continue;
@@ -279,9 +275,7 @@ export function findNearestTarget(bot) {
         }
 
         for (const e of cachedMobs) {
-          // [0.9.2] 生存確認を最初に行う（同上）
-          if (!isEntityUsable(e)) continue;
-          if (e.id === bot.id) continue;
+          if (e.id === bot.id || !isEntityUsable(e)) continue;
           if (!isLocationInsideBotBoundary(e.location)) continue;
           
           const d = distance(bot.location, e.location);
@@ -555,29 +549,10 @@ export function debugLog(bot, config, category, message, force = false) {
   owner.sendMessage(`${categoryColor}[PvPBot:${debugCategory}]§r §f${message}`);
 }
 
-// [0.9.2] 永続デバッグログのコンソール(ContentLog)ミラー。
-// ゲーム内 /pvpbot:debugdump は長文でコピーできないため、同じ内容を console.warn にも流し、
-// 既存のログビューア（ContentLog監視）でそのまま読めるようにする。
-// カテゴリごとに最小間隔を空けて過剰出力を防ぐ（death系のみ常時出力）。
-const PERSISTENT_MIRROR_MIN_GAP = { death: 0, sim: 0, debug: 0 };
-let persistentMirrorLastTick = {};
-function mirrorPersistentLogToConsole(category, message) {
-  try {
-    const gap = Number(PERSISTENT_MIRROR_MIN_GAP[category] ?? 12);
-    const now = Number(globalTick ?? 0);
-    const last = Number(persistentMirrorLastTick[category] ?? -99999);
-    if (now - last < gap) return;
-    persistentMirrorLastTick[category] = now;
-    const clean = String(message ?? "").replace(/§./g, "");
-    console.warn(`[PvPBot:${category}] ${clean}`);
-  } catch {}
-}
-
 export function appendPersistentDebugLog(category, message) {
   debugLogBuffer.push({ tick: globalTick, category, message, time: Date.now() });
   while (debugLogBuffer.length > DEBUG_LOG_LIMIT) debugLogBuffer.shift();
   setDebugLogDirty(true);
-  mirrorPersistentLogToConsole(category, message);
 }
 export function flushDebugLogIfDirty() {
   if (!debugLogDirty) return;

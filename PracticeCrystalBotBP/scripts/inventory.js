@@ -391,7 +391,7 @@ export function selectBestSword(bot) {
   // [0.9.0] クリスタル・アンカー・ベッド・遠距離引き絞り・エリトラダイブの実行中は
   // 剣への自動持ち替えをブロックし、「やっていることと持っているものが違う」現象を防ぐ！
   if (runtime?.pendingCrystal || runtime?.pendingAnchor || runtime?.pendingBed ||
-      runtime?.pendingRangedDraw || runtime?.elytraDashState?.active) {
+      runtime?.pendingRangedDraw || runtime?.elytraDashState?.active || runtime?.shieldGuardState?.active) {
     return patchGetSwordCombatStatsFromItem(runtime?.selectedSword ?? new ItemStack("minecraft:netherite_sword", 1));
   }
   let bestStats, bestItem, bestSlot = -1;

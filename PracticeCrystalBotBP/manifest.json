@@ -2,12 +2,12 @@
 	"format_version": 2,
 	"header": {
 		"name": "PracticeCrystalSimBot BP",
-		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.9.3: Diagnostics - tick probe now fires for every bot id (negative modulo fix), a one-time 'no target for 30s' notice with location, escape-teleport logs its landing spot/branch, and the SimBot registry logs when it drops an invalid sim. v0.9.2: Freeze fix - removing one bot mid-fight no longer stops the remaining bot (per-bot exception isolation, instant stale-target invalidation, cache cleanup on entity removal, idle look-around when no target). Bot debug/persistent logs are now mirrored to the content log so they can be read/copied in the log viewer. v0.9.1: Hard preset enables built-in debug logging by default (enabled/movement/combat/health). v0.9.0: 1) Strict Elytra-Mace discipline (never flies when enemy holds/uses crystals or anchors, never flies underground/indoors, requires >=14 horizontal blocks, aborts dive immediately if enemy starts crystal combat); 2) Held-item & action synchronization (prevents sword/obsidian overwrite during crystal/anchor/ranged/mace sequences, swaps active item into hotbar & syncs selectedSlotIndex); 3) Smart 1-block front blast mitigation (reuses existing cover blocks instead of re-placing every time, strictly 1-block feet-level cover with no 2-high walls so movement stays wide open).",
+		"description": "Crystal PvP practice bot as SimulatedPlayer. Requires Beta APIs experiment ON. v0.10.0: 1) Improved A* pathfinding (reuses existing open paths/stairs first, straight 4-cardinal climbing & straight staircase mining instead of diagonal corner-clipping); 2) Active Shield equipping & guarding (equips shield in mainhand + sneaks against projectiles, enemy bow/crossbow aim, and aerial mace/melee dives); 3) Hard preset defaults all cooldowns to 0 (minimum) with surroundTactic OFF; 4) Elytra-Mace aerial pursuit when enemy is high up with Slow Falling.",
 		"uuid": "f8c2d4e1-3a09-4b57-92c6-8e51d037f4a2",
 		"version": [
 			0,
-			9,
-			3
+			10,
+			0
 		],
 		"min_engine_version": [
 			1,
@@ -23,8 +23,8 @@
 			"uuid": "6a1b9e34-5f78-4c20-bd93-072a8e61c5d4",
 			"version": [
 				0,
-				9,
-				3
+				10,
+				0
 			]
 		}
 	],

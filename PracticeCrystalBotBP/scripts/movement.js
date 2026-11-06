@@ -43,6 +43,7 @@ import {
 import {
   navFindPath, navFindStandableNear, navIsStandableCell, navCanOccupy,
   navFindGroundY, navIsPassableBlock, navIsWaterBlock, navHasWalkableLine,
+  navSnapToCardinal2D,
 } from "./navigation.js";
 import {
   evaluateCombatTactic, tacticTryPillarUp, tacticTryBridgeToward,
@@ -665,9 +666,10 @@ function moveRequestPath(bot, runtime, goal, config) {
   }
   runtime.navLastPathTick = globalTick;
   runtime.navGoalKey = moveGoalKey(goal);
+  // [0.10.0] すでに空いている道（既存の通路・階段・迂回路）を確実に見つけるため探索空間を拡張
   const result = navFindPath(bot.dimension, bot.location, goal, {
-    maxExpansions: NAV_MAX_EXPANSIONS,
-    maxFall: 4,
+    maxExpansions: Math.max(640, NAV_MAX_EXPANSIONS),
+    maxFall: 6,
     maxJumpGap: config.jumpDash === false ? 1 : 3,
     respectBoundary: !!globalSettings.boundaryEnabled,
   });
@@ -767,6 +769,7 @@ function moveIsBotEmbedded(bot) {
 
 function moveFindMineTarget(bot, direction, targetLocation) {
   const feet = floorLocation(bot.location);
+  const runtime = getRuntime(getBotUid(bot) || "");
   // 1. 埋まっている場合は頭→足を優先で掘る
   const embeddedCandidates = [
     { x: feet.x, y: feet.y + 1, z: feet.z },
@@ -776,25 +779,53 @@ function moveFindMineTarget(bot, direction, targetLocation) {
     const block = getBlock(bot.dimension, candidate);
     if (block && !isAirBlock(block) && !PATCH_EXPLOSION_PRESERVE_IDS.has(block.typeId)) return candidate;
   }
-  // 2. 進行方向の当たり判定に触れるブロックを掘る
-  const horizontalOffsets = [{ x: 0, z: 0 }, { x: 0.3, z: 0 }, { x: -0.3, z: 0 }, { x: 0, z: 0.3 }, { x: 0, z: -0.3 }];
-  const yLevels = [1, 0];
-  if (targetLocation) {
-    if (targetLocation.y >= bot.location.y + 1.5) yLevels.unshift(2);
-    if (targetLocation.y < bot.location.y - 1.0) yLevels.push(-1);
-  }
-  for (const step of [0.55, 0.95, 1.35]) {
-    for (const yOffset of yLevels) {
-      for (const offset of horizontalOffsets) {
-        const probe = {
-          x: bot.location.x + direction.x * step + offset.x,
-          y: bot.location.y + yOffset,
-          z: bot.location.z + direction.z * step + offset.z,
-        };
-        const blockLocation = floorLocation(probe);
-        const block = getBlock(bot.dimension, blockLocation);
-        if (block && !isAirBlock(block) && !PATCH_EXPLOSION_PRESERVE_IDS.has(block.typeId)) return blockLocation;
+  // 2. [0.10.0] 上に上がりたい時は「斜め」ではなく「直線(東/西/南/北の4方向)」に固定して階段掘りを行う！
+  //    さらに頭上(feet.y+2)と1歩先の3段(y+1, y+2, y+3)を順番に掘ることで、真っ直ぐな階段でスムーズに上がれる。
+  const wantsUp = Boolean(targetLocation && targetLocation.y >= bot.location.y + 1.2);
+  let cardinal = navSnapToCardinal2D(direction);
+  if (wantsUp) {
+    if (runtime.stairCardinalDir && globalTick <= Number(runtime.stairCardinalUntilTick ?? 0)) {
+      cardinal = runtime.stairCardinalDir;
+    } else {
+      runtime.stairCardinalDir = cardinal;
+      runtime.stairCardinalUntilTick = globalTick + 45;
+    }
+    const cx = feet.x + cardinal.x;
+    const cz = feet.z + cardinal.z;
+    const stairMineCandidates = [
+      // まず自分の真上の天井(ジャンプ余裕)を空ける
+      { x: feet.x, y: feet.y + 2, z: feet.z },
+      // 次に直進1歩目の頭・胴・上段頭上(階段で1段上がるための3マス空間)を直線で掘る
+      { x: cx, y: feet.y + 1, z: cz },
+      { x: cx, y: feet.y + 2, z: cz },
+      // 1歩目の足元(feet.y)は踏み台として残すが、もし1歩目の下(feet.y-1)が空でなく既に高い壁ならfeet.yも掘って1段にする
+      ...(isSolidBlock(getBlock(bot.dimension, { x: cx, y: feet.y, z: cz })) &&
+          isSolidBlock(getBlock(bot.dimension, { x: cx, y: feet.y + 1, z: cz })) &&
+          !isSolidBlock(getBlock(bot.dimension, { x: cx, y: feet.y - 1, z: cz }))
+          ? [{ x: cx, y: feet.y, z: cz }] : []),
+      // 直進2歩目の階段空間も先回りして直線で掘る
+      { x: feet.x + cardinal.x * 2, y: feet.y + 2, z: feet.z + cardinal.z * 2 },
+      { x: feet.x + cardinal.x * 2, y: feet.y + 3, z: feet.z + cardinal.z * 2 },
+    ];
+    for (const candidate of stairMineCandidates) {
+      const block = getBlock(bot.dimension, candidate);
+      if (block && !isAirBlock(block) && !PATCH_EXPLOSION_PRESERVE_IDS.has(block.typeId)) {
+        return candidate;
       }
+    }
+  }
+  // 3. 平地・降下時も直線4方向(cardinal)の中心列を最優先で掘り、斜め掘りによる角引っかかりを防ぐ
+  const yLevels = [1, 0];
+  if (targetLocation && targetLocation.y < bot.location.y - 1.0) yLevels.push(-1);
+  for (const step of [1, 2]) {
+    for (const yOffset of yLevels) {
+      const candidate = {
+        x: feet.x + cardinal.x * step,
+        y: feet.y + yOffset,
+        z: feet.z + cardinal.z * step,
+      };
+      const block = getBlock(bot.dimension, candidate);
+      if (block && !isAirBlock(block) && !PATCH_EXPLOSION_PRESERVE_IDS.has(block.typeId)) return candidate;
     }
   }
   return undefined;
@@ -883,7 +914,6 @@ function moveTryEscapeTeleport(bot, config, target) {
             runtime.lastEscapeTeleportTick = globalTick;
             runtime.stuckTicks = 0;
             runtime.navPath = undefined;
-            debugLog(bot, config, "movement", `§e[脱出] TP脱出(近傍) → ${x + 0.5}, ${y}, ${z + 0.5}`, true);
             return true;
           } catch { return false; }
         }
@@ -900,7 +930,6 @@ function moveTryEscapeTeleport(bot, config, target) {
     runtime.lastEscapeTeleportTick = globalTick;
     runtime.stuckTicks = 0;
     runtime.navPath = undefined;
-    debugLog(bot, config, "movement", `§e[脱出] TP脱出(オーナー付近) → ${Number(rescue.x ?? 0).toFixed(1)}, ${Number(rescue.y ?? 0).toFixed(1)}, ${Number(rescue.z ?? 0).toFixed(1)}`, true);
     return true;
   } catch { return false; }
 }
@@ -954,34 +983,49 @@ function moveHandleStuckEscalation(bot, config, target, stuckTicks, forwardDirec
     return { handled: true };
   }
 
-  // 段階2: ジャンプ＋足場設置で段差/隙間を即座に越える
+  // [0.10.0] 上に上がりたい時は斜めではなく直線(東/西/南/北)にスナップして進む
+  const straightDir = (tactic?.mode === TACTIC_CLIMB || (target && target.location.y - bot.location.y >= 1.3))
+    ? (runtime.stairCardinalDir && globalTick <= Number(runtime.stairCardinalUntilTick ?? 0)
+        ? runtime.stairCardinalDir
+        : navSnapToCardinal2D(forwardDirection))
+    : forwardDirection;
+
+  // 段階2: まず既存の空いているA*経路を再検索し、無ければ直線方向にジャンプ/足場設置
   if (stuckTicks < STUCK_STAGE_DETOUR_TICKS) {
-    if (config.blockPlacing !== false && tacticTryBridgeToward(bot, config, forwardDirection)) {
+    if (!runtime.navPath || !runtime.navPath.length) {
+      moveRequestPath(bot, runtime, tactic?.goal ?? target?.location ?? bot.location, config);
+    }
+    if (moveHasStepObstacle(bot, straightDir) || moveTryJump(bot, runtime, config, MOVE_SPRINT_JUMP_BONUS, straightDir)) {
+      return { handled: false, direction: straightDir };
+    }
+    if (config.blockPlacing !== false && tacticTryBridgeToward(bot, config, straightDir)) {
       return { handled: true };
     }
-    if (moveHasStepObstacle(bot, forwardDirection) || moveTryJump(bot, runtime, config, MOVE_SPRINT_JUMP_BONUS, forwardDirection)) {
-      return { handled: false }; // ジャンプしつつ前進継続
-    }
-    return { handled: false };
+    return { handled: false, direction: straightDir };
   }
 
-  // 段階3: 左右へ迂回 or 橋架け
+  // 段階3: 既存の空いている道へ迂回 or 直線で階段掘り
   if (stuckTicks < STUCK_STAGE_MINE_TICKS) {
-    if (config.blockPlacing !== false && tacticTryBridgeToward(bot, config, forwardDirection)) {
+    // 上に上がりたいのに壁で塞がれている場合は、斜めにうろうろせず直線で階段掘りして上がる！
+    if (tactic?.mode === TACTIC_CLIMB && moveTryMineBlock(bot, config, straightDir, target?.location)) {
+      debugLog(bot, config, "movement", `§e[階段掘り] 直線方向(${straightDir.x},${straightDir.z})へ階段採掘中`);
       return { handled: true };
     }
-    const detour = moveComputeDetourDirection(bot, runtime, forwardDirection);
+    const detour = moveComputeDetourDirection(bot, runtime, straightDir);
     if (detour) {
       runtime.navPath = undefined; // 経路も作り直す
-      debugLog(bot, config, "movement", `§e[脱出] 迂回中 stuck=${stuckTicks}`);
+      debugLog(bot, config, "movement", `§e[脱出] 空いている道へ迂回中 stuck=${stuckTicks}`);
       return { handled: false, direction: detour };
+    }
+    if (config.blockPlacing !== false && tacticTryBridgeToward(bot, config, straightDir)) {
+      return { handled: true };
     }
   }
 
-  // 段階4: 掘って進む or 足場を積む
+  // 段階4: 直線で掘って進む or 足場を積む
   if (stuckTicks < STUCK_STAGE_PILLAR_TICKS) {
-    if (moveTryMineBlock(bot, config, forwardDirection, target?.location)) {
-      debugLog(bot, config, "movement", `§e[脱出] 進路を採掘 stuck=${stuckTicks}`);
+    if (moveTryMineBlock(bot, config, straightDir, target?.location)) {
+      debugLog(bot, config, "movement", `§e[脱出] 直線進路を採掘 stuck=${stuckTicks}`);
       return { handled: true };
     }
     if (config.blockPlacing !== false && tacticTryPillarUp(bot, config, target)) {
@@ -1091,14 +1135,17 @@ export function handleMovement(bot, target, config) {
   }
 
   // ── 経路探索 ──
-  // [0.8.0] 直線で歩ける場合や近距離(<=3.5ブロック)ではA*の遠回りウェイポイントを使わず最短で直進する
-  const directWalkable = goal ? navHasWalkableLine(bot.dimension, bot.location, goal, 1, 3) : false;
-  const needsPath = config.pathfinding !== false && goal && distance(bot.location, goal) > 3.5 &&
-    !directWalkable && tactic.mode !== TACTIC_ENGAGE;
+  // [0.10.0] すでに空いている道・既存の階段・通路があるならそれを最優先で利用する！
+  // 直線で段差なしに歩ける(directWalkable)時だけ直進し、壁や高低差がある場合は近距離(>1.8)でもA*経路を使って空いている道を通る。
+  const heightDiffToGoal = goal ? Math.abs(goal.y - bot.location.y) : 0;
+  const directWalkable = goal ? (heightDiffToGoal <= 1.1 && navHasWalkableLine(bot.dimension, bot.location, goal, 1, 2)) : false;
+  const needsPath = config.pathfinding !== false && goal &&
+    !directWalkable && (distance(bot.location, goal) > 1.8 || heightDiffToGoal > 1.1) &&
+    tactic.mode !== TACTIC_ENGAGE;
   if (needsPath && moveShouldRepath(runtime, goal, config.uid)) {
     moveRequestPath(bot, runtime, goal, config);
   }
-  if (!needsPath) runtime.navPath = undefined;
+  if (directWalkable) runtime.navPath = undefined;
 
   const waypoint = moveConsumeWaypoint(bot, runtime);
   const steeringTargetLocation = waypoint ?? goal;
@@ -1109,6 +1156,10 @@ export function handleMovement(bot, target, config) {
     : normalize2D(vectorTo(bot.location, target.location));
   if (Math.abs(forwardDirection.x) < 0.0001 && Math.abs(forwardDirection.z) < 0.0001) {
     forwardDirection = normalize2D(vectorTo(bot.location, target.location));
+  }
+  // [0.10.0] 上に上がりたい時（段差登りやCLIMB戦術）は斜め移動ではなく直線4方向(cardinal)へ矯正する
+  if ((tactic.mode === TACTIC_CLIMB || (waypoint && waypoint.y - bot.location.y >= 0.5)) && !directWalkable) {
+    forwardDirection = navSnapToCardinal2D(forwardDirection);
   }
 
   // ── スタック判定と段階的脱出 ──

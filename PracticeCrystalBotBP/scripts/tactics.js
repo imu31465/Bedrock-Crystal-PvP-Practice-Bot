@@ -24,6 +24,7 @@ import { getRuntime } from "./config.js";
 import {
   navIsStandableCell, navFindStandableNear, navFindGroundY,
   navIsPassableBlock, navCanOccupy, navHasWalkableLine,
+  navFindOpenAscendingRoute, navSnapToCardinal2D,
 } from "./navigation.js";
 import { equipMainhandItem, consumeManagedItem, selectBestSword, patchCalculateExpectedHealthDamage } from "./inventory.js";
 import { estimateExplosionDamage, runCrystalExplosionWithFallback, patchRunAnchorPlaceAndDetonateSequence, setBlockIdWithFallback } from "./explosion.js";
@@ -120,8 +121,10 @@ export function tacticTryBridgeToward(bot, config, direction) {
   const bridged = Number(runtime.bridgeBlockCount ?? 0);
   if (bridged >= TACTIC_BRIDGE_MAX_LENGTH) return false;
   const feet = floorLocation(bot.location);
-  const dx = Math.abs(direction.x) >= 0.25 ? Math.sign(direction.x) : Math.round(direction.x);
-  const dz = Math.abs(direction.z) >= 0.25 ? Math.sign(direction.z) : Math.round(direction.z);
+  // [0.10.0] 斜めではなく直線(東/西/南/北の4方向)で足場・階段を作る
+  const cardinal = navSnapToCardinal2D(direction);
+  const dx = cardinal.x;
+  const dz = cardinal.z;
   if (dx === 0 && dz === 0) return false;
   const step = {
     x: feet.x + dx,
@@ -447,9 +450,25 @@ export function evaluateCombatTactic(bot, target, config, options = {}) {
         reason: `相手は高所・射程内 → 低位から足元を狙う (+${verticalDelta.toFixed(1)})`,
       };
     }
+    // [0.10.0] すでに空いている既存の道・登り口があるならそれを最優先で利用する！
+    const openRoute = navFindOpenAscendingRoute(bot.dimension, bot.location, target.location, 10);
+    if (openRoute?.goal) {
+      if (openRoute.path?.waypoints?.length) {
+        runtime.navPath = openRoute.path.waypoints;
+        runtime.navLastPathTick = globalTick;
+      }
+      return {
+        mode: TACTIC_CLIMB,
+        goal: openRoute.goal,
+        desiredDistance: maintainDistance,
+        sprint: horizontalDistance > 3,
+        allowJump: true,
+        reason: `既存の空いている道を利用して登る (+${verticalDelta.toFixed(1)})`,
+      };
+    }
     // 遠方の高所: 根元まで最短で詰める（柱は最終手段のみ）
-    const goal = navFindStandableNear(bot.dimension, { x: target.location.x, y: target.location.y - 2, z: target.location.z }, 3, 3) ??
-                 navFindStandableNear(bot.dimension, target.location, 3, 3);
+    const goal = navFindStandableNear(bot.dimension, { x: target.location.x, y: target.location.y - 2, z: target.location.z }, 4, 4) ??
+                 navFindStandableNear(bot.dimension, target.location, 4, 4);
     return {
       mode: TACTIC_CLIMB,
       goal,

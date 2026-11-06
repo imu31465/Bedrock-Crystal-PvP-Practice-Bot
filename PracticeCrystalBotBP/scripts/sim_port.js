@@ -29,15 +29,7 @@ export function getAllSimBots() {
     let valid = false;
     try { valid = !!sim && sim.isValid && sim.location; } catch {}
     if (valid) out.push(sim);
-    else {
-      simBotByPlayerId.delete(id);
-      // [0.9.3] レジストリから除外した事実を記録（Botが突然tickされなくなる問題の調査用）
-      try {
-        let nm = "?";
-        try { nm = sim?.name ?? "?"; } catch {}
-        appendPersistentDebugLog("debug", `sim registry: dropped invalid sim id=${id} name=${nm}`);
-      } catch {}
-    }
+    else simBotByPlayerId.delete(id);
   }
   return out;
 }
